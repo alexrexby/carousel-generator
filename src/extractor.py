@@ -50,63 +50,114 @@ def get_youtube_title(url: str) -> str:
     return ""
 
 
-def extract_from_youtube(url: str) -> Dict[str, Any]:
+def extract_from_youtube_apify(url: str, apify_token: Optional[str] = None) -> Optional[str]:
+    """Извлечение субтитров YouTube через Apify Actor (обход блокировок IP датацентров YouTube)."""
+    token = apify_token or DEFAULT_APIFY_TOKEN
+    if not token:
+        return None
+    try:
+        actor_url = f"https://api.apify.com/v2/acts/pintostudio~youtube-transcript-scraper/run-sync-get-dataset-items?token={token}"
+        resp = httpx.post(actor_url, json={"videoUrl": url}, timeout=45.0)
+        if resp.status_code in (200, 201):
+            items = resp.json()
+            if isinstance(items, list) and len(items) > 0:
+                first = items[0]
+                lines = []
+                data_snippets = first.get("data", []) if isinstance(first, dict) else []
+                for s in data_snippets:
+                    txt = s.get("text", "") if isinstance(s, dict) else ""
+                    if txt:
+                        lines.append(txt)
+                if lines:
+                    return " ".join(lines)
+    except Exception as e:
+        logger.warning(f"Apify YouTube transcript fallback error: {e}")
+    return None
+
+
+def extract_from_youtube(url: str, apify_token: Optional[str] = None) -> Dict[str, Any]:
     """Извлечение субтитров и транскрипта из YouTube (Shorts и длинные видео)."""
     video_id = extract_youtube_video_id(url)
     if not video_id:
         raise ExtractionError(f"Не удалось распознать ID видео YouTube из ссылки: {url}")
 
-    if not YouTubeTranscriptApi:
-        raise ExtractionError("Библиотека youtube-transcript-api не установлена")
-
     title = get_youtube_title(url)
+    full_text = ""
 
-    try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        transcript = None
-        
-        # 1. Сначала ищем русские субтитры (ручные или сгенерированные)
+    # 1. Сначала пробуем локальную библиотеку youtube-transcript-api
+    if YouTubeTranscriptApi:
         try:
-            transcript = transcript_list.find_transcript(['ru'])
-        except Exception:
-            pass
+            ytt = YouTubeTranscriptApi()
+            transcript_list = None
+            if hasattr(ytt, "list"):
+                transcript_list = ytt.list(video_id)
+            elif hasattr(YouTubeTranscriptApi, "list_transcripts"):
+                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
 
-        # 2. Если русских нет, ищем английские
-        if not transcript:
-            try:
-                transcript = transcript_list.find_transcript(['en'])
-            except Exception:
-                pass
+            if transcript_list:
+                transcript = None
+                # Ищем русские субтитры напрямую
+                try:
+                    transcript = transcript_list.find_transcript(['ru'])
+                except Exception:
+                    pass
 
-        # 3. Берем любые доступные субтитры
-        if not transcript:
-            for t in transcript_list:
-                transcript = t
-                break
+                # Если нет, пробуем перевести на русский доступные субтитры
+                if not transcript:
+                    for t in transcript_list:
+                        if getattr(t, 'is_translatable', False):
+                            try:
+                                transcript = t.translate('ru')
+                                break
+                            except Exception:
+                                pass
 
-        if not transcript:
-            raise ExtractionError("У этого видео нет доступных субтитров.")
+                # Если перевод не удался, берем английские или любые доступные
+                if not transcript:
+                    try:
+                        transcript = transcript_list.find_transcript(['en'])
+                    except Exception:
+                        for t in transcript_list:
+                            transcript = t
+                            break
 
-        data = transcript.fetch()
-        full_text = " ".join([item.get("text", "") for item in data]).strip()
-        
+                if transcript:
+                    data = transcript.fetch()
+                    lines = []
+                    for item in data:
+                        snippet_text = getattr(item, 'text', None) or (item.get('text', '') if isinstance(item, dict) else str(item))
+                        if snippet_text:
+                            lines.append(snippet_text)
+                    full_text = " ".join(lines)
+        except Exception as e:
+            logger.warning(f"Local youtube-transcript-api error for {video_id}: {e}")
+
+    # 2. Если локально не удалось (IpBlocked или отсутствие метода) — используем Apify
+    if not full_text or len(full_text.strip()) < 30:
+        logger.info(f"Falling back to Apify YouTube transcript scraper for {url}...")
+        apify_text = extract_from_youtube_apify(url, apify_token=apify_token)
+        if apify_text:
+            full_text = apify_text
+
+    # Очистка текста от служебных меток времени и скобок
+    if full_text:
         full_text = re.sub(r"\[.*?\]", "", full_text)
         full_text = re.sub(r"\s+", " ", full_text).strip()
 
-        if len(full_text) < 40:
-            raise ExtractionError("Субтитры видео слишком короткие для упаковки в карусель.")
+    # 3. Если субтитров совсем нет, но есть заголовок — используем тему видео
+    if len(full_text) < 30:
+        if title:
+            full_text = f"Тема и содержание видео: {title}"
+        else:
+            raise ExtractionError("У этого видео нет доступных субтитров и не удалось получить описание. Попробуйте вставить тезисы текстом.")
 
-        return {
-            "source_type": "youtube",
-            "source_url": url,
-            "title": title or f"YouTube Video ({video_id})",
-            "text": full_text,
-            "author": "YouTube Creator"
-        }
-    except Exception as e:
-        if isinstance(e, ExtractionError):
-            raise
-        raise ExtractionError(f"Ошибка загрузки субтитров YouTube: {e}")
+    return {
+        "source_type": "youtube",
+        "source_url": url,
+        "title": title or f"YouTube Video ({video_id})",
+        "text": full_text,
+        "author": "YouTube Creator"
+    }
 
 
 def extract_from_instagram(url: str, apify_token: Optional[str] = None) -> Dict[str, Any]:
@@ -228,7 +279,7 @@ def extract_content(url_or_text: str, apify_token: Optional[str] = None) -> Dict
     if parsed.scheme in ("http", "https") and parsed.netloc:
         netloc = parsed.netloc.lower()
         if "youtube.com" in netloc or "youtu.be" in netloc:
-            return extract_from_youtube(raw)
+            return extract_from_youtube(raw, apify_token=apify_token)
         elif "instagram.com" in netloc:
             return extract_from_instagram(raw, apify_token=apify_token)
         elif "threads.net" in netloc or "threads.com" in netloc:
