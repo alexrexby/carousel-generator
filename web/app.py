@@ -14,19 +14,28 @@ from src.theme import Theme
 from src.renderer import render_deck
 from src.vk_poster import VKCarouselPoster, VKAPIError, build_post_text_from_slides
 from src.triggers_manager import TriggersManager
+from src.extractor import extract_content, ExtractionError
+from src.ai_pipeline import structure_content_into_carousel, AIPipelineError
+from src.funnels_manager import FunnelsManager
+from src.auto_queue import QueueManager
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP_DIR = os.path.join(BASE_DIR, "output", "web_renders")
 TRIGGERS_PATH = os.path.join(BASE_DIR, "data", "triggers.yaml")
+FUNNELS_PATH = os.path.join(BASE_DIR, "data", "funnels.json")
+QUEUE_PATH = os.path.join(BASE_DIR, "data", "queue.json")
+
 os.makedirs(TMP_DIR, exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)
 
-# Секретный токен авторизации (можно переопределить через ENV)
+# Секретный токен авторизации
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "karusel_a3a266badc2f91c609cfaac6").strip()
 
 triggers_mgr = TriggersManager(filepath=TRIGGERS_PATH)
+funnels_mgr = FunnelsManager(filepath=FUNNELS_PATH, triggers_filepath=TRIGGERS_PATH)
+queue_mgr = QueueManager(queue_file=QUEUE_PATH, funnels_mgr=funnels_mgr)
 
-app = FastAPI(title="Carousel Studio & VK Publisher", description="Web Generator for Social Media Carousels with VK Autoposting")
+app = FastAPI(title="Carousel Studio & Autopilot", description="AI Content Pipeline: Extract -> Carousel -> Auto-Schedule VK -> Bot Triggers")
 
 
 def check_auth(request: Request) -> bool:
@@ -66,15 +75,12 @@ def check_auth(request: Request) -> bool:
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
 
-    # Разрешаем системные пути и эндпоинты авторизации без проверки
     if path in ["/api/auth/login", "/api/auth/logout", "/openapi.json", "/docs", "/redoc"]:
         return await call_next(request)
 
-    # Главная страница: обрабатываем вход по query param или отдаем логин-страницу
     if path == "/":
         token_param = request.query_params.get("token")
         if token_param and token_param.strip() == AUTH_TOKEN:
-            # Устанавливаем cookie на 30 дней и отдаем страницу
             response = HTMLResponse(content=HTML_CONTENT)
             response.set_cookie(
                 key="karusel_token",
@@ -91,11 +97,10 @@ async def auth_middleware(request: Request, call_next):
         
         return await call_next(request)
 
-    # Для всех API и медиа путей требуем авторизацию
     if not check_auth(request):
         return JSONResponse(
             status_code=401,
-            content={"detail": "Доступ запрещен. Укажите валидный токен доступа в заголовке, cookie или параметре ?token=..."}
+            content={"detail": "Доступ запрещен. Укажите валидный токен доступа."}
         )
 
     return await call_next(request)
@@ -170,6 +175,16 @@ class AddTriggerRequest(BaseModel):
     lead_magnet_url: Optional[str] = None
     reply_comment_text: Optional[str] = None
     dm_text: Optional[str] = None
+
+
+class AutopilotProcessRequest(BaseModel):
+    url_or_text: str
+    funnel_id: str
+    custom_token: Optional[str] = None
+
+
+class ExtractPreviewRequest(BaseModel):
+    url_or_text: str
 
 
 @app.get("/api/themes")
@@ -359,6 +374,73 @@ def add_trigger(req: AddTriggerRequest):
         return res
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка сохранения триггера: {e}")
+
+
+# =====================================================================
+# AUTOPILOT, FUNNELS & SCHEDULE DASHBOARD ENDPOINTS
+# =====================================================================
+
+@app.get("/api/funnels")
+def api_list_funnels():
+    return {"funnels": funnels_mgr.list_funnels()}
+
+
+@app.post("/api/funnels")
+def api_save_funnel(data: Dict[str, Any]):
+    try:
+        saved = funnels_mgr.save_funnel(data)
+        return {"success": True, "funnel": saved}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения воронки: {e}")
+
+
+@app.delete("/api/funnels/{funnel_id}")
+def api_delete_funnel(funnel_id: str):
+    ok = funnels_mgr.delete_funnel(funnel_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Воронка не найдена")
+    return {"success": True}
+
+
+@app.get("/api/queue")
+def api_list_queue():
+    items = queue_mgr.list_queue()
+    return {"queue": items, "total": len(items)}
+
+
+@app.delete("/api/queue/{item_id}")
+def api_delete_queue_item(item_id: str):
+    ok = queue_mgr.delete_item(item_id, cancel_vk=True)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Элемент очереди не найден")
+    return {"success": True}
+
+
+@app.post("/api/extractor/preview")
+def api_extract_preview(req: ExtractPreviewRequest):
+    try:
+        extracted = extract_content(req.url_or_text)
+        return {"success": True, "extracted": extracted}
+    except ExtractionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка извлечения: {e}")
+
+
+@app.post("/api/autopilot/process")
+def api_process_autopilot(req: AutopilotProcessRequest):
+    try:
+        res = queue_mgr.process_autopilot_pipeline(
+            url_or_text=req.url_or_text,
+            funnel_id=req.funnel_id,
+            base_dir=BASE_DIR,
+            custom_token=req.custom_token
+        )
+        return res
+    except (ExtractionError, AIPipelineError, VKAPIError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка автопилота: {e}")
 
 
 # =====================================================================
@@ -619,7 +701,6 @@ LOGIN_HTML = """<!DOCTYPE html>
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Неверный токен');
 
-        // Перенаправляем на главную
         window.location.href = '/';
       } catch (err) {
         errorBox.textContent = '❌ ' + err.message;
@@ -636,7 +717,7 @@ LOGIN_HTML = """<!DOCTYPE html>
 
 
 # =====================================================================
-# MAIN STUDIO HTML
+# MAIN DASHBOARD & STUDIO HTML
 # =====================================================================
 
 HTML_CONTENT = """<!DOCTYPE html>
@@ -644,7 +725,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Carousel Studio & VK Publisher · 1080x1350</title>
+  <title>Carousel Studio & Autopilot · 1080x1350</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -663,6 +744,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       --text-muted: #94a3b8;
       --success: #10b981;
       --danger: #ef4444;
+      --warning: #f59e0b;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -677,13 +759,13 @@ HTML_CONTENT = """<!DOCTYPE html>
       flex-direction: column;
     }
     header {
-      padding: 16px 32px;
+      padding: 14px 32px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       border-bottom: 1px solid var(--card-border);
       backdrop-filter: blur(12px);
-      background: rgba(7, 10, 19, 0.8);
+      background: rgba(7, 10, 19, 0.85);
       position: sticky;
       top: 0;
       z-index: 50;
@@ -705,19 +787,59 @@ HTML_CONTENT = """<!DOCTYPE html>
       border-radius: 9999px;
       font-weight: 600;
     }
+    
+    /* NAV TABS */
+    .nav-tabs {
+      display: flex;
+      background: rgba(255, 255, 255, 0.05);
+      padding: 4px;
+      border-radius: 12px;
+      border: 1px solid var(--card-border);
+      gap: 4px;
+    }
+    .nav-tab {
+      padding: 8px 16px;
+      border-radius: 8px;
+      border: none;
+      background: none;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+    .nav-tab:hover { color: #fff; background: rgba(255, 255, 255, 0.04); }
+    .nav-tab.active {
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 2px 10px var(--accent-glow);
+    }
+
     .header-actions {
       display: flex;
       align-items: center;
       gap: 12px;
     }
-    .container {
+    
+    .tab-content {
+      display: none;
       flex: 1;
+      width: 100%;
+      max-width: 1720px;
+      margin: 0 auto;
+      padding: 24px 32px;
+    }
+    .tab-content.active { display: block; }
+
+    /* STUDIO GRID */
+    .studio-grid {
       display: grid;
       grid-template-columns: 460px 1fr;
       gap: 24px;
-      padding: 24px 32px;
-      max-width: 1720px;
-      margin: 0 auto;
       width: 100%;
     }
     .panel {
@@ -749,7 +871,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       font-weight: 600;
       color: var(--text-muted);
     }
-    select, textarea, input[type="text"] {
+    select, textarea, input[type="text"], input[type="url"] {
       background: rgba(10, 15, 26, 0.8);
       border: 1px solid var(--card-border);
       border-radius: 10px;
@@ -760,7 +882,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       outline: none;
       transition: all 0.2s;
     }
-    select:focus, textarea:focus, input[type="text"]:focus {
+    select:focus, textarea:focus, input[type="text"]:focus, input[type="url"]:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px var(--accent-glow);
     }
@@ -815,6 +937,15 @@ HTML_CONTENT = """<!DOCTYPE html>
     .btn-vk:hover {
       background: var(--vk-hover);
       transform: translateY(-1px);
+    }
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #f87171;
+      box-shadow: none;
+    }
+    .btn-danger:hover {
+      background: rgba(239, 68, 68, 0.25);
     }
     .preview-header {
       display: flex;
@@ -888,6 +1019,95 @@ HTML_CONTENT = """<!DOCTYPE html>
     .loading .spinner { display: inline-block; }
     .loading .btn-text { opacity: 0.7; }
 
+    /* DASHBOARD / SCHEDULE STYLES */
+    .schedule-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+    }
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .stat-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .stat-value {
+      font-size: 26px;
+      font-weight: 800;
+      color: #fff;
+    }
+    .stat-label {
+      font-size: 13px;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+    .queue-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+      gap: 20px;
+    }
+    .queue-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      position: relative;
+      transition: all 0.2s;
+    }
+    .queue-card:hover {
+      border-color: rgba(99, 102, 241, 0.3);
+      transform: translateY(-2px);
+    }
+    .slot-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      color: #a5b4fc;
+      border-radius: 8px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .queue-preview-strip {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+    .queue-thumb {
+      width: 70px;
+      aspect-ratio: 4/5;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 1px solid var(--card-border);
+      flex-shrink: 0;
+    }
+    .funnel-tag {
+      background: rgba(39, 135, 245, 0.12);
+      border: 1px solid rgba(39, 135, 245, 0.25);
+      color: #60a5fa;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
     /* MODAL STYLES */
     .modal-backdrop {
       position: fixed;
@@ -905,7 +1125,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       border: 1px solid rgba(255, 255, 255, 0.12);
       border-radius: 18px;
       width: 100%;
-      max-width: 620px;
+      max-width: 640px;
       max-height: 90vh;
       overflow-y: auto;
       display: flex;
@@ -976,14 +1196,14 @@ HTML_CONTENT = """<!DOCTYPE html>
       color: #93c5fd;
       line-height: 1.5;
     }
-    .trigger-item {
+    .funnel-card {
       background: rgba(10, 15, 26, 0.6);
       border: 1px solid var(--card-border);
-      border-radius: 10px;
-      padding: 14px;
+      border-radius: 14px;
+      padding: 20px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 14px;
     }
   </style>
 </head>
@@ -993,6 +1213,15 @@ HTML_CONTENT = """<!DOCTYPE html>
       <span>🎠 Carousel Studio</span>
       <span class="logo-badge">1080x1350</span>
     </div>
+
+    <!-- TABS -->
+    <div class="nav-tabs">
+      <button class="nav-tab active" onclick="switchTab('studio')">🎨 Студия</button>
+      <button class="nav-tab" onclick="switchTab('autopilot')">🚀 Автопилот по ссылкам</button>
+      <button class="nav-tab" onclick="switchTab('schedule')">📅 Дашборд отложки (<span id="scheduleTabCount">0</span>)</button>
+      <button class="nav-tab" onclick="switchTab('funnels')">⚙️ Воронки</button>
+    </div>
+
     <div class="header-actions">
       <button id="openTriggersBtn" class="btn btn-secondary" style="padding: 8px 14px; font-size: 13px;">
         ⚡️ Ключевые слова бота
@@ -1008,69 +1237,269 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </header>
 
-  <div class="container">
-    <!-- Левая панель: Параметры -->
-    <div class="panel">
-      <div class="panel-title">
-        <span>Параметры карусели</span>
-      </div>
-
-      <div class="field">
-        <label>Тема оформления</label>
-        <select id="themeSelect">
-          <option value="default">Default (Indigo & White)</option>
-          <option value="dark">Dark Mode (Emerald & Graphite)</option>
-          <option value="minimal">Minimal (High Contrast B&W)</option>
-          <option value="ocean">Ocean (Azure Blue)</option>
-        </select>
-      </div>
-
-      <div class="field">
-        <label>Готовый шаблон</label>
-        <select id="templateSelect">
-          <option value="">-- Выберите шаблон для вставки --</option>
-        </select>
-      </div>
-
-      <div class="field" style="flex: 1;">
-        <label>JSON структура слайдов</label>
-        <textarea id="jsonInput" spellcheck="false"></textarea>
-      </div>
-
-      <button id="renderBtn" class="btn">
-        <div class="spinner"></div>
-        <span class="btn-text">✨ Собрать карусель</span>
-      </button>
-    </div>
-
-    <!-- Правая панель: Результаты -->
-    <div class="panel">
-      <div class="preview-header">
+  <!-- ============================================================= -->
+  <!-- TAB 1: STUDIO (MANUAL GENERATOR) -->
+  <!-- ============================================================= -->
+  <div id="tab-studio" class="tab-content active">
+    <div class="studio-grid">
+      <!-- Левая панель: Параметры -->
+      <div class="panel">
         <div class="panel-title">
-          <span>Сгенерированные карточки</span>
-          <span id="slideCount" style="font-size: 13px; color: var(--text-muted); font-weight: 500;"></span>
+          <span>Параметры карусели</span>
         </div>
-        <div style="display: flex; gap: 10px;">
-          <a id="downloadBtn" href="#" class="btn btn-secondary" style="display: none; text-decoration: none; padding: 8px 16px; font-size: 13px;">
-            📥 Скачать ZIP
-          </a>
-          <button id="openVkModalBtn" class="btn btn-vk" style="display: none; padding: 8px 16px; font-size: 13px;">
-            📢 Опубликовать в VK
-          </button>
+
+        <div class="field">
+          <label>Тема оформления</label>
+          <select id="themeSelect">
+            <option value="default">Default (Indigo & White)</option>
+            <option value="dark">Dark Mode (Emerald & Graphite)</option>
+            <option value="minimal">Minimal (High Contrast B&W)</option>
+            <option value="ocean">Ocean (Azure Blue)</option>
+          </select>
         </div>
+
+        <div class="field">
+          <label>Готовый шаблон</label>
+          <select id="templateSelect">
+            <option value="">-- Выберите шаблон для вставки --</option>
+          </select>
+        </div>
+
+        <div class="field" style="flex: 1;">
+          <label>JSON структура слайдов</label>
+          <textarea id="jsonInput" spellcheck="false"></textarea>
+        </div>
+
+        <button id="renderBtn" class="btn">
+          <div class="spinner"></div>
+          <span class="btn-text">✨ Собрать карусель</span>
+        </button>
       </div>
 
-      <div id="galleryContainer" class="gallery">
-        <div class="empty-state" style="grid-column: 1 / -1;">
-          <div class="empty-icon">🎨</div>
-          <div style="font-size: 16px; font-weight: 600; color: #fff;">Здесь появятся ваши слайды</div>
-          <div style="font-size: 14px; max-width: 320px;">Выберите шаблон слева и нажмите «Собрать карусель», чтобы сгенерировать карточки 1080x1350 px.</div>
+      <!-- Правая панель: Результаты -->
+      <div class="panel">
+        <div class="preview-header">
+          <div class="panel-title">
+            <span>Сгенерированные карточки</span>
+            <span id="slideCount" style="font-size: 13px; color: var(--text-muted); font-weight: 500;"></span>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <a id="downloadBtn" href="#" class="btn btn-secondary" style="display: none; text-decoration: none; padding: 8px 16px; font-size: 13px;">
+              📥 Скачать ZIP
+            </a>
+            <button id="openVkModalBtn" class="btn btn-vk" style="display: none; padding: 8px 16px; font-size: 13px;">
+              📢 Опубликовать в VK
+            </button>
+          </div>
+        </div>
+
+        <div id="galleryContainer" class="gallery">
+          <div class="empty-state" style="grid-column: 1 / -1;">
+            <div class="empty-icon">🎨</div>
+            <div style="font-size: 16px; font-weight: 600; color: #fff;">Здесь появятся ваши слайды</div>
+            <div style="font-size: 14px; max-width: 320px;">Выберите шаблон слева и нажмите «Собрать карусель», чтобы сгенерировать карточки 1080x1350 px.</div>
+          </div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- МОДАЛЬНОЕ ОКНО ПУБЛИКАЦИИ В VK -->
+  <!-- ============================================================= -->
+  <!-- TAB 2: AUTOPILOT (ZERO-TOUCH LINK INPUT) -->
+  <!-- ============================================================= -->
+  <div id="tab-autopilot" class="tab-content">
+    <div style="max-width: 900px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px;">
+      <div class="panel">
+        <div class="panel-title">
+          <span>🚀 Автопилот: Генерация карусели и автоотложка в ВК</span>
+          <span class="badge badge-green">3 поста в день (10:00, 14:30, 19:00)</span>
+        </div>
+
+        <div class="box-info">
+          Вставьте ссылку на YouTube (Shorts или видео), Instagram (Reels или карусель), Threads — система сама извлечет контент, упакует через ИИ в 1080x1350 слайды, найдет свободный слот и поставит пост в отложку ВКонтакте с привязкой лид-магнита в боте.
+        </div>
+
+        <div class="field">
+          <label>Ссылка на контент или сырой текст</label>
+          <input type="url" id="autopilotUrlInput" placeholder="https://youtube.com/shorts/... или https://instagram.com/reel/... или тред Threads" style="padding: 14px 16px; font-size: 15px;">
+        </div>
+
+        <div class="field">
+          <label>Выберите воронку (определяет визуал, группу ВК, кодовое слово и лид-магнит)</label>
+          <select id="autopilotFunnelSelect" style="padding: 12px 14px;">
+            <option value="">Загрузка воронок...</option>
+          </select>
+        </div>
+
+        <button id="runAutopilotBtn" class="btn" style="padding: 16px 24px; font-size: 16px;">
+          <div class="spinner"></div>
+          <span class="btn-text">⚡️ Запустить в автопилот (Создать & Поставить в отложку)</span>
+        </button>
+
+        <!-- БЛОК СТАТУСА ВЫПОЛНЕНИЯ -->
+        <div id="autopilotStatusBox" style="display: none; padding: 18px; border-radius: 12px; background: rgba(10, 15, 26, 0.6); border: 1px solid var(--card-border); flex-direction: column; gap: 12px;">
+          <div id="autopilotStepText" style="font-size: 14px; font-weight: 600; color: #fff;"></div>
+          <div id="autopilotResultCard" style="display: none; flex-direction: column; gap: 10px; margin-top: 10px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================= -->
+  <!-- TAB 3: SCHEDULE DASHBOARD (3 POSTS PER DAY) -->
+  <!-- ============================================================= -->
+  <div id="tab-schedule" class="tab-content">
+    <div class="schedule-header">
+      <div>
+        <h2 style="font-size: 22px; font-weight: 800; color: #fff;">📅 Дашборд запланированного контента</h2>
+        <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
+          Сетка отложенных каруселей ВКонтакте: 3 публикации в день (10:00 · 14:30 · 19:00 МСК)
+        </div>
+      </div>
+      <button class="btn btn-secondary" onclick="loadQueueData()">
+        🔄 Обновить сетку
+      </button>
+    </div>
+
+    <!-- STATS -->
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-value" id="statTotalQueued">0</div>
+        <div class="stat-label">Всего в отложке ВК</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="statSlotsPerDay">3</div>
+        <div class="stat-label">Слотов в день (10:00, 14:30, 19:00)</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="statDaysCovered">0 дн.</div>
+        <div class="stat-label">Заполненный горизонт</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="statNextSlot">--:--</div>
+        <div class="stat-label">Ближайший слот</div>
+      </div>
+    </div>
+
+    <!-- QUEUE GRID -->
+    <div id="queueGridContainer" class="queue-grid">
+      <div class="empty-state" style="grid-column: 1 / -1;">
+        <div class="empty-icon">📅</div>
+        <div style="font-size: 16px; font-weight: 600; color: #fff;">Очередь отложки пуста</div>
+        <div style="font-size: 14px; max-width: 340px;">Вставьте ссылку во вкладке «Автопилот», и карусели автоматически займут слоты в сетке.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================= -->
+  <!-- TAB 4: FUNNELS (PRESETS & LEAD MAGNETS) -->
+  <!-- ============================================================= -->
+  <div id="tab-funnels" class="tab-content">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+      <div>
+        <h2 style="font-size: 22px; font-weight: 800; color: #fff;">⚙️ Пресеты воронок</h2>
+        <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
+          Настройте визуал, токен ВК, кодовое слово и лид-магнит один раз — автопилот применит их ко всем видео
+        </div>
+      </div>
+      <button class="btn" onclick="openNewFunnelModal()">
+        + Создать воронку
+      </button>
+    </div>
+
+    <div id="funnelsListContainer" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(440px, 1fr)); gap: 20px;">
+      <!-- Карточки воронок -->
+    </div>
+  </div>
+
+  <!-- ============================================================= -->
+  <!-- MODAL: CREATE / EDIT FUNNEL -->
+  <!-- ============================================================= -->
+  <div id="funnelModal" class="modal-backdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span id="funnelModalTitle">⚙️ Новая воронка</span>
+        </div>
+        <button class="modal-close" onclick="closeFunnelModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="editFunnelId">
+
+        <div class="field">
+          <label>Название воронки</label>
+          <input type="text" id="fnNameInput" placeholder="Например: Бьюти-бизнес: Сервис и стандарты" required>
+        </div>
+
+        <div class="field">
+          <label>Визуальная тема каруселей</label>
+          <select id="fnThemeSelect">
+            <option value="ocean">Ocean (Azure Blue)</option>
+            <option value="default">Default (Indigo & Slate)</option>
+            <option value="dark">Dark Mode (Emerald & Graphite)</option>
+            <option value="minimal">Minimal (Black & White)</option>
+          </select>
+        </div>
+
+        <div style="border-top: 1px solid var(--card-border); padding-top: 14px; display: flex; flex-direction: column; gap: 14px;">
+          <span style="font-size: 14px; font-weight: 700; color: #fff;">📢 Публикация ВКонтакте</span>
+          
+          <div class="field">
+            <label>VK Access Token</label>
+            <input type="text" id="fnVkTokenInput" placeholder="vk1.a.your_token..." style="font-size: 12px; font-family: 'JetBrains Mono', monospace;">
+          </div>
+
+          <div class="field">
+            <label>Куда публиковать</label>
+            <select id="fnVkTargetSelect">
+              <option value="user">👤 Личная страница</option>
+              <option value="group">👥 Сообщество / Группа</option>
+            </select>
+          </div>
+
+          <div class="field" id="fnGroupIdField" style="display: none;">
+            <label>ID группы ВКонтакте (только положительное число)</label>
+            <input type="text" id="fnGroupIdInput" placeholder="123456789">
+          </div>
+        </div>
+
+        <div style="border-top: 1px solid var(--card-border); padding-top: 14px; display: flex; flex-direction: column; gap: 14px;">
+          <span style="font-size: 14px; font-weight: 700; color: #fff;">🎁 Лид-магнит и бот выдачи</span>
+
+          <div class="field">
+            <label>Кодовое слово (триггер в комментариях и ЛС)</label>
+            <input type="text" id="fnKeywordInput" placeholder="Например: СЕРВИС" required>
+          </div>
+
+          <div class="field">
+            <label>Название материала</label>
+            <input type="text" id="fnLmTitleInput" placeholder="Регламент работы администратора">
+          </div>
+
+          <div class="field">
+            <label>Ссылка на скачивание лид-магнита</label>
+            <input type="text" id="fnLmUrlInput" placeholder="https://disk.yandex.ru/d/... или Telegram-канал">
+          </div>
+        </div>
+
+        <div style="border-top: 1px solid var(--card-border); padding-top: 14px; display: flex; flex-direction: column; gap: 14px;">
+          <span style="font-size: 14px; font-weight: 700; color: #fff;">⏰ Сетка расписания (слоты часов МСК)</span>
+          <div class="field">
+            <label>3 слота в день (через запятую)</label>
+            <input type="text" id="fnSlotsInput" value="10:00, 14:30, 19:00">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeFunnelModal()">Отмена</button>
+        <button class="btn" onclick="saveFunnel()">Сохранить воронку</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================= -->
+  <!-- MODAL: VK PUBLISHER (STUDIO MANUAL) -->
+  <!-- ============================================================= -->
   <div id="vkModal" class="modal-backdrop">
     <div class="modal">
       <div class="modal-header">
@@ -1081,7 +1510,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
       <div class="modal-body">
         <div class="box-info">
-          💡 Для публикации нужен Standalone User Token. Если у вас его нет, получите его в один клик на <a href="https://vkhost.github.io" target="_blank" style="color: #fff; font-weight: 600; text-decoration: underline;">vkhost.github.io</a> (выберите Kate Mobile или VK Admin).
+          💡 Для публикации нужен Standalone User Token. Получите его в один клик на <a href="https://vkhost.github.io" target="_blank" style="color: #fff; font-weight: 600; text-decoration: underline;">vkhost.github.io</a> (выберите Kate Mobile или VK Admin).
         </div>
 
         <div class="field">
@@ -1112,7 +1541,6 @@ HTML_CONTENT = """<!DOCTYPE html>
           <textarea id="vkMessageInput" style="min-height: 120px;" placeholder="Текст, который будет сопровождать карточки..."></textarea>
         </div>
 
-        <!-- БЛОК АКТИВАЦИИ КЛЮЧЕВОГО СЛОВА -->
         <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--card-border); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 12px;">
           <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; color: #fff; font-size: 14px;">
             <input type="checkbox" id="activateKeywordCheck" checked style="width: 16px; height: 16px; accent-color: var(--vk-color);">
@@ -1143,7 +1571,9 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- МОДАЛЬНОЕ ОКНО КЛЮЧЕВЫХ СЛОВ БОТА -->
+  <!-- ============================================================= -->
+  <!-- MODAL: TRIGGERS LIST -->
+  <!-- ============================================================= -->
   <div id="triggersModal" class="modal-backdrop">
     <div class="modal" style="max-width: 720px;">
       <div class="modal-header">
@@ -1172,6 +1602,23 @@ HTML_CONTENT = """<!DOCTYPE html>
   </div>
 
   <script>
+    // Tab switching
+    function switchTab(tabId) {
+      document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+      const activeBtn = Array.from(document.querySelectorAll('.nav-tab')).find(t => t.getAttribute('onclick') && t.getAttribute('onclick').includes(tabId));
+      if (activeBtn) activeBtn.classList.add('active');
+
+      const targetContent = document.getElementById('tab-' + tabId);
+      if (targetContent) targetContent.classList.add('active');
+
+      if (tabId === 'schedule') loadQueueData();
+      if (tabId === 'funnels') loadFunnelsData();
+      if (tabId === 'autopilot') loadAutopilotDropdowns();
+    }
+
+    // Studio Elements
     const themeSelect = document.getElementById('themeSelect');
     const templateSelect = document.getElementById('templateSelect');
     const jsonInput = document.getElementById('jsonInput');
@@ -1181,7 +1628,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     const openVkModalBtn = document.getElementById('openVkModalBtn');
     const slideCount = document.getElementById('slideCount');
 
-    // VK elements
+    // VK Elements
     const vkModal = document.getElementById('vkModal');
     const vkTokenInput = document.getElementById('vkTokenInput');
     const checkTokenBtn = document.getElementById('checkTokenBtn');
@@ -1196,15 +1643,37 @@ HTML_CONTENT = """<!DOCTYPE html>
     const doPublishBtn = document.getElementById('doPublishBtn');
     const publishStatus = document.getElementById('publishStatus');
 
-    // Triggers elements
+    // Triggers Elements
     const triggersModal = document.getElementById('triggersModal');
     const openTriggersBtn = document.getElementById('openTriggersBtn');
     const triggersListContainer = document.getElementById('triggersListContainer');
 
+    // Autopilot Elements
+    const autopilotUrlInput = document.getElementById('autopilotUrlInput');
+    const autopilotFunnelSelect = document.getElementById('autopilotFunnelSelect');
+    const runAutopilotBtn = document.getElementById('runAutopilotBtn');
+    const autopilotStatusBox = document.getElementById('autopilotStatusBox');
+    const autopilotStepText = document.getElementById('autopilotStepText');
+    const autopilotResultCard = document.getElementById('autopilotResultCard');
+
+    // Queue Elements
+    const scheduleTabCount = document.getElementById('scheduleTabCount');
+    const statTotalQueued = document.getElementById('statTotalQueued');
+    const statDaysCovered = document.getElementById('statDaysCovered');
+    const statNextSlot = document.getElementById('statNextSlot');
+    const queueGridContainer = document.getElementById('queueGridContainer');
+
+    // Funnels Elements
+    const funnelsListContainer = document.getElementById('funnelsListContainer');
+    const funnelModal = document.getElementById('funnelModal');
+    const fnVkTargetSelect = document.getElementById('fnVkTargetSelect');
+    const fnGroupIdField = document.getElementById('fnGroupIdField');
+
     let currentRenderId = null;
     let templatesCache = {};
+    let funnelsCache = [];
 
-    // Load saved token from localStorage
+    // LocalStorage token
     const savedToken = localStorage.getItem('vk_user_token');
     if (savedToken) {
       vkTokenInput.value = savedToken;
@@ -1212,9 +1681,11 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     async function loadInitialData() {
       try {
-        const [themesRes, templatesRes] = await Promise.all([
+        const [themesRes, templatesRes, funnelsRes, queueRes] = await Promise.all([
           fetch('/api/themes'),
-          fetch('/api/templates')
+          fetch('/api/templates'),
+          fetch('/api/funnels'),
+          fetch('/api/queue')
         ]);
         
         const themes = await themesRes.json();
@@ -1231,6 +1702,13 @@ HTML_CONTENT = """<!DOCTYPE html>
           templateSelect.value = templates[0].id;
           jsonInput.value = JSON.stringify(templates[0].slides, null, 2);
         }
+
+        const fData = await funnelsRes.json();
+        funnelsCache = fData.funnels || [];
+        loadAutopilotDropdowns();
+
+        const qData = await queueRes.json();
+        updateQueueStats(qData.queue || []);
       } catch (e) {
         console.error('Failed to load initial data:', e);
       }
@@ -1295,13 +1773,320 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
     });
 
-    // VK Modal Logic
+    // =============================================================
+    // AUTOPILOT LOGIC
+    // =============================================================
+    function loadAutopilotDropdowns() {
+      if (!funnelsCache || funnelsCache.length === 0) {
+        autopilotFunnelSelect.innerHTML = '<option value="">Нет созданных воронок (создайте во вкладке Воронки)</option>';
+        return;
+      }
+      autopilotFunnelSelect.innerHTML = funnelsCache.map(fn => `
+        <option value="${fn.id}">${fn.name} · Тема: ${fn.theme} · Кодовое слово: «${fn.lead_magnet.keyword}»</option>
+      `).join('');
+    }
+
+    runAutopilotBtn.addEventListener('click', async () => {
+      const url = autopilotUrlInput.value.trim();
+      if (!url) {
+        alert('Пожалуйста, укажите ссылку на YouTube, Reels, Threads или вставьте текст.');
+        return;
+      }
+
+      const funnelId = autopilotFunnelSelect.value;
+      if (!funnelId) {
+        alert('Пожалуйста, выберите воронку.');
+        return;
+      }
+
+      runAutopilotBtn.classList.add('loading');
+      runAutopilotBtn.disabled = true;
+      autopilotStatusBox.style.display = 'flex';
+      autopilotStepText.innerHTML = '⏳ <b>Шаг 1/5:</b> Извлечение контента и субтитров...';
+      autopilotResultCard.style.display = 'none';
+
+      try {
+        const res = await fetch('/api/autopilot/process', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url_or_text: url,
+            funnel_id: funnelId,
+            custom_token: localStorage.getItem('vk_user_token') || undefined
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Сбой автопилота');
+
+        const item = data.item;
+        autopilotStepText.innerHTML = '✅ <b>Готово!</b> Карусель упакована и поставлена в отложку ВКонтакте.';
+        autopilotResultCard.style.display = 'flex';
+        autopilotResultCard.innerHTML = `
+          <div style="background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span class="slot-pill">⏰ ${item.scheduled_date_str}</span>
+              <a href="${item.wall_url}" target="_blank" style="color: #60a5fa; font-weight: 700; text-decoration: underline; font-size: 13px;">Открыть запись в ВК ↗</a>
+            </div>
+            <div style="font-weight: 700; color: #fff; font-size: 15px; margin-top: 4px;">${item.title}</div>
+            <div style="font-size: 13px; color: var(--text-muted);">${item.slides_count} слайдов · Воронка: ${item.funnel_name}</div>
+            <div class="queue-preview-strip" style="margin-top: 6px;">
+              ${item.slides.map(s => `<img class="queue-thumb" src="${s}">`).join('')}
+            </div>
+          </div>
+        `;
+
+        autopilotUrlInput.value = '';
+        loadQueueData();
+      } catch (err) {
+        autopilotStepText.innerHTML = `<span style="color: var(--danger)">❌ Ошибка: ${err.message}</span>`;
+      } finally {
+        runAutopilotBtn.classList.remove('loading');
+        runAutopilotBtn.disabled = false;
+      }
+    });
+
+    // =============================================================
+    // QUEUE / SCHEDULE LOGIC
+    // =============================================================
+    async function loadQueueData() {
+      try {
+        const res = await fetch('/api/queue');
+        const data = await res.json();
+        const items = data.queue || [];
+        updateQueueStats(items);
+
+        if (items.length === 0) {
+          queueGridContainer.innerHTML = `
+            <div class="empty-state" style="grid-column: 1 / -1;">
+              <div class="empty-icon">📅</div>
+              <div style="font-size: 16px; font-weight: 600; color: #fff;">Очередь отложки пуста</div>
+              <div style="font-size: 14px; max-width: 340px;">Вставьте ссылку во вкладке «Автопилот», и карусели автоматически займут слоты в сетке.</div>
+            </div>
+          `;
+          return;
+        }
+
+        queueGridContainer.innerHTML = items.map(item => `
+          <div class="queue-card">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;">
+              <span class="slot-pill">⏰ ${item.scheduled_date_str}</span>
+              <button class="btn btn-danger" style="padding: 4px 8px; font-size: 11px;" onclick="cancelQueueItem('${item.id}')" title="Отменить публикацию">✕</button>
+            </div>
+
+            <div style="font-weight: 700; color: #fff; font-size: 15px; line-height: 1.4;">${item.title}</div>
+            
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <span class="funnel-tag">${item.funnel_name || 'Воронка'}</span>
+              <span style="font-size: 12px; color: var(--text-muted);">${item.slides_count} слайдов</span>
+            </div>
+
+            <div class="queue-preview-strip">
+              ${(item.slides || []).map(s => `<a href="${s}" target="_blank"><img class="queue-thumb" src="${s}"></a>`).join('')}
+            </div>
+
+            <div style="background: rgba(0,0,0,0.3); padding: 10px; border-radius: 8px; font-size: 12px; color: var(--text-muted); max-height: 60px; overflow-y: hidden; text-overflow: ellipsis; white-space: pre-wrap;">
+              ${item.post_text}
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--card-border); padding-top: 12px; margin-top: 4px;">
+              <span class="badge badge-green">● Отложено в ВК</span>
+              <a href="${item.wall_url}" target="_blank" style="color: var(--vk-color); font-weight: 600; text-decoration: none; font-size: 12px;">Пост в ВК ↗</a>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        console.error('Failed to load queue:', e);
+      }
+    }
+
+    function updateQueueStats(items) {
+      scheduleTabCount.textContent = items.length;
+      statTotalQueued.textContent = items.length;
+
+      const daysCount = Math.ceil(items.length / 3);
+      statDaysCovered.textContent = `${daysCount} дн.`;
+
+      if (items.length > 0) {
+        statNextSlot.textContent = items[0].scheduled_date_str.split(' в ')[1] || items[0].scheduled_date_str;
+      } else {
+        statNextSlot.textContent = '--:--';
+      }
+    }
+
+    async function cancelQueueItem(id) {
+      if (!confirm('Отменить эту публикацию и удалить из отложки ВК?')) return;
+      try {
+        const res = await fetch(`/api/queue/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+          loadQueueData();
+        } else {
+          alert('Не удалось отменить запись');
+        }
+      } catch (e) {
+        alert('Ошибка: ' + e.message);
+      }
+    }
+
+    // =============================================================
+    // FUNNELS PRESETS LOGIC
+    // =============================================================
+    async function loadFunnelsData() {
+      try {
+        const res = await fetch('/api/funnels');
+        const data = await res.json();
+        funnelsCache = data.funnels || [];
+        loadAutopilotDropdowns();
+
+        if (funnelsCache.length === 0) {
+          funnelsListContainer.innerHTML = '<div style="color: var(--text-muted)">Нет созданных воронок. Нажмите «+ Создать воронку».</div>';
+          return;
+        }
+
+        funnelsListContainer.innerHTML = funnelsCache.map(fn => `
+          <div class="funnel-card">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="font-size: 16px; font-weight: 700; color: #fff;">${fn.name}</span>
+              <div style="display: flex; gap: 8px;">
+                <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="editFunnel('${fn.id}')">Редактировать</button>
+                <button class="btn btn-danger" style="padding: 4px 8px; font-size: 12px;" onclick="deleteFunnel('${fn.id}')">✕</button>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+              <span class="badge badge-blue">Тема: ${fn.theme}</span>
+              <span class="badge badge-green">Кодовое слово: «${fn.lead_magnet.keyword}»</span>
+              <span class="badge" style="background: rgba(255,255,255,0.08);">Слоты: ${(fn.schedule.slots || []).join(', ')}</span>
+            </div>
+
+            <div style="font-size: 13px; color: var(--text-muted); display: flex; flex-direction: column; gap: 4px; background: rgba(0,0,0,0.25); padding: 10px; border-radius: 8px;">
+              <div>🎁 <b>Бонус:</b> ${fn.lead_magnet.title}</div>
+              <div>🔗 <b>Ссылка:</b> <a href="${fn.lead_magnet.url}" target="_blank" style="color: #60a5fa;">${fn.lead_magnet.url}</a></div>
+              <div>📢 <b>Цель ВК:</b> ${fn.vk.target === 'group' ? 'Группа (ID ' + fn.vk.group_id + ')' : 'Личная страница'}</div>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        console.error('Failed to load funnels:', e);
+      }
+    }
+
+    fnVkTargetSelect.addEventListener('change', () => {
+      fnGroupIdField.style.display = fnVkTargetSelect.value === 'group' ? 'flex' : 'none';
+    });
+
+    function openNewFunnelModal() {
+      document.getElementById('funnelModalTitle').textContent = '⚙️ Новая воронка';
+      document.getElementById('editFunnelId').value = '';
+      document.getElementById('fnNameInput').value = '';
+      document.getElementById('fnThemeSelect').value = 'ocean';
+      document.getElementById('fnVkTokenInput').value = localStorage.getItem('vk_user_token') || '';
+      document.getElementById('fnVkTargetSelect').value = 'user';
+      document.getElementById('fnGroupIdInput').value = '';
+      fnGroupIdField.style.display = 'none';
+      document.getElementById('fnKeywordInput').value = '';
+      document.getElementById('fnLmTitleInput').value = '';
+      document.getElementById('fnLmUrlInput').value = '';
+      document.getElementById('fnSlotsInput').value = '10:00, 14:30, 19:00';
+      funnelModal.style.display = 'flex';
+    }
+
+    function editFunnel(id) {
+      const fn = funnelsCache.find(f => f.id === id);
+      if (!fn) return;
+
+      document.getElementById('funnelModalTitle').textContent = '⚙️ Редактировать воронку';
+      document.getElementById('editFunnelId').value = fn.id;
+      document.getElementById('fnNameInput').value = fn.name || '';
+      document.getElementById('fnThemeSelect').value = fn.theme || 'ocean';
+      document.getElementById('fnVkTokenInput').value = fn.vk?.access_token || localStorage.getItem('vk_user_token') || '';
+      document.getElementById('fnVkTargetSelect').value = fn.vk?.target || 'user';
+      document.getElementById('fnGroupIdInput').value = fn.vk?.group_id || '';
+      fnGroupIdField.style.display = fn.vk?.target === 'group' ? 'flex' : 'none';
+      document.getElementById('fnKeywordInput').value = fn.lead_magnet?.keyword || '';
+      document.getElementById('fnLmTitleInput').value = fn.lead_magnet?.title || '';
+      document.getElementById('fnLmUrlInput').value = fn.lead_magnet?.url || '';
+      document.getElementById('fnSlotsInput').value = (fn.schedule?.slots || ['10:00', '14:30', '19:00']).join(', ');
+      funnelModal.style.display = 'flex';
+    }
+
+    function closeFunnelModal() {
+      funnelModal.style.display = 'none';
+    }
+
+    async function saveFunnel() {
+      const name = document.getElementById('fnNameInput').value.trim();
+      const keyword = document.getElementById('fnKeywordInput').value.trim().toUpperCase();
+      if (!name || !keyword) {
+        alert('Укажите название воронки и кодовое слово');
+        return;
+      }
+
+      const id = document.getElementById('editFunnelId').value;
+      const theme = document.getElementById('fnThemeSelect').value;
+      const vkToken = document.getElementById('fnVkTokenInput').value.trim();
+      const target = document.getElementById('fnVkTargetSelect').value;
+      const groupId = document.getElementById('fnGroupIdInput').value.trim();
+      const lmTitle = document.getElementById('fnLmTitleInput').value.trim();
+      const lmUrl = document.getElementById('fnLmUrlInput').value.trim();
+      const slotsStr = document.getElementById('fnSlotsInput').value.trim();
+      const slots = slotsStr.split(',').map(s => s.trim()).filter(Boolean);
+
+      const payload = {
+        id: id || undefined,
+        name: name,
+        theme: theme,
+        vk: {
+          access_token: vkToken,
+          target: target,
+          group_id: target === 'group' && groupId ? parseInt(groupId, 10) : null
+        },
+        lead_magnet: {
+          keyword: keyword,
+          title: lmTitle || 'Материалы',
+          url: lmUrl,
+          comment_reply: `@{user_screen_name} ({first_name}), мы отправили ${lmTitle} в личные сообщения! 🎁\n\nЕсли сообщения закрыты, напишите нам: vk.me/{group_domain}`,
+          dm_text: `Здравствуйте, {first_name}! 🎁\n\nВы запросили «${lmTitle}» по кодовому слову «${keyword}».\n\nСсылка на материалы: ${lmUrl}`
+        },
+        schedule: {
+          slots: slots.length > 0 ? slots : ['10:00', '14:30', '19:00'],
+          timezone_offset: 3
+        }
+      };
+
+      try {
+        const res = await fetch('/api/funnels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) throw new Error('Failed to save funnel');
+        closeFunnelModal();
+        loadFunnelsData();
+      } catch (e) {
+        alert('Ошибка сохранения: ' + e.message);
+      }
+    }
+
+    async function deleteFunnel(id) {
+      if (!confirm('Удалить этот пресет воронки?')) return;
+      try {
+        await fetch(`/api/funnels/${id}`, { method: 'DELETE' });
+        loadFunnelsData();
+      } catch (e) {
+        alert('Ошибка удаления: ' + e.message);
+      }
+    }
+
+    // =============================================================
+    // VK PUBLISHER MODAL (STUDIO MANUAL)
+    // =============================================================
     openVkModalBtn.addEventListener('click', async () => {
       if (!currentRenderId) return;
       vkModal.style.display = 'flex';
       publishStatus.style.display = 'none';
 
-      // Auto-extract post text and keyword from current slides
       try {
         const slides = JSON.parse(jsonInput.value);
         const res = await fetch('/api/vk/preview-text', {
@@ -1318,7 +2103,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
       } catch (e) {}
 
-      // Auto verify token if exists
       if (vkTokenInput.value.trim() && vkTargetSelect.options.length <= 1) {
         checkToken();
       }
@@ -1339,7 +2123,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         const data = await res.json();
         vkMessageInput.value = data.text;
       } catch (e) {
-        alert('Ошибка при сборке текста: ' + e.message);
+        alert('Ошибка сборки текста: ' + e.message);
       }
     });
 
@@ -1370,7 +2154,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         const u = data.profile.user;
         tokenStatus.innerHTML = `<span style="color: var(--success)">✓ Авторизован: <b>${u.first_name} ${u.last_name}</b> (ID: ${u.id})</span>`;
 
-        // Fill targets
         vkTargetSelect.innerHTML = `<option value="user">👤 Личная страница: ${u.first_name} ${u.last_name}</option>`;
         if (data.profile.groups && data.profile.groups.length > 0) {
           data.profile.groups.forEach(g => {
@@ -1389,7 +2172,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     doPublishBtn.addEventListener('click', async () => {
       const token = vkTokenInput.value.trim();
       if (!token) {
-        alert('Пожалуйста, укажите VK Access Token');
+        alert('Укажите VK Access Token');
         return;
       }
 
@@ -1436,6 +2219,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           html += `<br><span style="font-size: 12px; color: #a7f3d0;">✓ Кодовое слово «${data.trigger.keyword.toUpperCase()}» активировано в боте</span>`;
         }
         publishStatus.innerHTML = html;
+        loadQueueData();
       } catch (e) {
         publishStatus.style.background = 'rgba(239, 68, 68, 0.15)';
         publishStatus.style.color = '#f87171';
@@ -1446,7 +2230,9 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
     });
 
-    // Triggers Modal Logic
+    // =============================================================
+    // TRIGGERS MODAL LOGIC
+    // =============================================================
     openTriggersBtn.addEventListener('click', async () => {
       triggersModal.style.display = 'flex';
       triggersListContainer.innerHTML = '<div style="color: var(--text-muted); font-size: 13px;">Загрузка...</div>';
@@ -1459,7 +2245,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
 
         triggersListContainer.innerHTML = data.triggers.map(t => `
-          <div class="trigger-item">
+          <div class="trigger-item" style="background: rgba(10, 15, 26, 0.6); border: 1px solid var(--card-border); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 8px;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
               <span style="font-weight: 700; font-size: 14px; color: #fff;">${t.name}</span>
               <span class="badge ${t.type === 'comment' ? 'badge-blue' : 'badge-green'}">${t.type === 'comment' ? 'Комментарии под постом' : 'Сообщения в ЛС'}</span>

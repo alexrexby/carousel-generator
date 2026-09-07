@@ -1,0 +1,27 @@
+[
+  {
+    "id": "beauty_service",
+    "name": "Бьюти-бизнес: Сервис и стандарты",
+    "theme": "ocean",
+    "vk": {
+      "target": "user",
+      "group_id": null,
+      "target_name": "Личная страница"
+    },
+    "lead_magnet": {
+      "keyword": "СЕРВИС",
+      "title": "Регламент работы администратора",
+      "url": "https://disk.yandex.ru/d/service_guide",
+      "comment_reply": "@{user_screen_name} ({first_name}), регламент отправили вам в ЛС! 🎁\n\nЕсли сообщения закрыты, напишите нам: vk.me/{group_domain}",
+      "dm_text": "Здравствуйте, {first_name}! 🎁\n\nВы запросили регламент по кодовому слову «СЕРВИС».\n\nСсылка на скачивание: https://disk.yandex.ru/d/service_guide"
+    },
+    "schedule": {
+      "slots": [
+        "10:00",
+        "14:30",
+        "19:00"
+      ],
+      "timezone_offset": 3
+    }
+  }
+]

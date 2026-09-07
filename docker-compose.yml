@@ -5,15 +5,20 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8007:8007"
+    env_file:
+      - .env
     environment:
       - AUTH_TOKEN=${AUTH_TOKEN:-karusel_a3a266badc2f91c609cfaac6}
+      - POLZA_API_KEY=${POLZA_API_KEY}
+      - APIFY_TOKEN=${APIFY_TOKEN}
     volumes:
       - ./output:/app/output
       - ./config:/app/config
       - ./decks:/app/decks
       - ./assets:/app/assets
       - ./data:/app/data
+      - /opt/vk-bot-engine/config:/opt/vk-bot-engine/config
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 512M
