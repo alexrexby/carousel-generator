@@ -56,7 +56,6 @@ def get_default_triggers_path() -> str:
 class TriggersManager:
     def __init__(self, filepath: Optional[str] = None):
         self.filepath = filepath or get_default_triggers_path()
-        self.filepath = filepath
         self._ensure_file_exists()
 
     def _ensure_file_exists(self):
