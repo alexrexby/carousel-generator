@@ -6,8 +6,8 @@ import uuid
 import zipfile
 import shutil
 from typing import Dict, Any, List, Optional
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse, Response
+from fastapi import FastAPI, HTTPException, Request, Response, Depends
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, JSONResponse
 from pydantic import BaseModel
 
 from src.theme import Theme
@@ -21,10 +21,122 @@ TRIGGERS_PATH = os.path.join(BASE_DIR, "data", "triggers.yaml")
 os.makedirs(TMP_DIR, exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)
 
+# Секретный токен авторизации (можно переопределить через ENV)
+AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "karusel_a3a266badc2f91c609cfaac6").strip()
+
 triggers_mgr = TriggersManager(filepath=TRIGGERS_PATH)
 
 app = FastAPI(title="Carousel Studio & VK Publisher", description="Web Generator for Social Media Carousels with VK Autoposting")
 
+
+def check_auth(request: Request) -> bool:
+    """Проверка наличия и валидности токена доступа."""
+    if not AUTH_TOKEN:
+        return True
+
+    # 1. Query parameter: ?token=...
+    token_param = request.query_params.get("token")
+    if token_param and token_param.strip() == AUTH_TOKEN:
+        return True
+
+    # 2. Cookie: karusel_token=...
+    cookie_token = request.cookies.get("karusel_token")
+    if cookie_token and cookie_token.strip() == AUTH_TOKEN:
+        return True
+
+    # 3. Header: Authorization: Bearer ...
+    auth_header = request.headers.get("Authorization")
+    if auth_header:
+        if auth_header.startswith("Bearer "):
+            bearer = auth_header[7:].strip()
+            if bearer == AUTH_TOKEN:
+                return True
+        elif auth_header.strip() == AUTH_TOKEN:
+            return True
+
+    # 4. Header: X-Access-Token
+    x_token = request.headers.get("X-Access-Token")
+    if x_token and x_token.strip() == AUTH_TOKEN:
+        return True
+
+    return False
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+
+    # Разрешаем системные пути и эндпоинты авторизации без проверки
+    if path in ["/api/auth/login", "/api/auth/logout", "/openapi.json", "/docs", "/redoc"]:
+        return await call_next(request)
+
+    # Главная страница: обрабатываем вход по query param или отдаем логин-страницу
+    if path == "/":
+        token_param = request.query_params.get("token")
+        if token_param and token_param.strip() == AUTH_TOKEN:
+            # Устанавливаем cookie на 30 дней и отдаем страницу
+            response = HTMLResponse(content=HTML_CONTENT)
+            response.set_cookie(
+                key="karusel_token",
+                value=AUTH_TOKEN,
+                max_age=2592000,
+                path="/",
+                httponly=False,
+                samesite="lax"
+            )
+            return response
+
+        if not check_auth(request):
+            return HTMLResponse(content=LOGIN_HTML, status_code=200)
+        
+        return await call_next(request)
+
+    # Для всех API и медиа путей требуем авторизацию
+    if not check_auth(request):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Доступ запрещен. Укажите валидный токен доступа в заголовке, cookie или параметре ?token=..."}
+        )
+
+    return await call_next(request)
+
+
+# =====================================================================
+# AUTH ENDPOINTS
+# =====================================================================
+
+class LoginRequest(BaseModel):
+    token: str
+
+
+@app.post("/api/auth/login")
+def api_login(req: LoginRequest, response: Response):
+    entered = req.token.strip()
+    if entered != AUTH_TOKEN:
+        raise HTTPException(status_code=401, detail="Неверный токен доступа")
+
+    response.set_cookie(
+        key="karusel_token",
+        value=AUTH_TOKEN,
+        max_age=2592000,
+        path="/",
+        httponly=False,
+        samesite="lax"
+    )
+    return {"success": True, "message": "Авторизация успешна"}
+
+
+@app.get("/api/auth/logout")
+@app.post("/api/auth/logout")
+def api_logout():
+    response = RedirectResponse(url="/", status_code=303)
+    response.delete_cookie("karusel_token", path="/")
+    return response
+
+
+# =====================================================================
+# CORE STUDIO ENDPOINTS
+# =====================================================================
 
 class RenderRequest(BaseModel):
     slides: List[Dict[str, Any]]
@@ -42,7 +154,7 @@ class VKPreviewTextRequest(BaseModel):
 class VKPublishRequest(BaseModel):
     access_token: str
     render_id: str
-    target: str = "user"  # "user" или "group"
+    target: str = "user"
     group_id: Optional[int] = None
     message: str = ""
     publish_date: Optional[int] = None
@@ -250,7 +362,281 @@ def add_trigger(req: AddTriggerRequest):
 
 
 # =====================================================================
-# FRONTEND HTML / CSS / JS
+# LOGIN PAGE HTML
+# =====================================================================
+
+LOGIN_HTML = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Вход по токену · Carousel Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #070a13;
+      --card-bg: rgba(16, 24, 40, 0.85);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --accent: #6366f1;
+      --accent-hover: #4f46e5;
+      --accent-glow: rgba(99, 102, 241, 0.3);
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --danger: #ef4444;
+      --danger-bg: rgba(239, 68, 68, 0.12);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      background-image: 
+        radial-gradient(at 20% 20%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
+        radial-gradient(at 80% 80%, rgba(39, 135, 245, 0.12) 0px, transparent 50%);
+      color: var(--text);
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .auth-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      padding: 40px 36px;
+      width: 100%;
+      max-width: 440px;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.6);
+      backdrop-filter: blur(20px);
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+      animation: fadeIn 0.3s ease-out;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 20px;
+      font-weight: 800;
+    }
+    .badge {
+      font-size: 11px;
+      padding: 3px 9px;
+      background: rgba(99, 102, 241, 0.15);
+      color: #818cf8;
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      border-radius: 9999px;
+      font-weight: 600;
+    }
+    .title {
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: #fff;
+    }
+    .subtitle {
+      font-size: 14px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+    .input-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+    input[type="password"], input[type="text"] {
+      width: 100%;
+      background: rgba(10, 15, 26, 0.8);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      color: #fff;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+      padding: 14px 44px 14px 16px;
+      outline: none;
+      transition: all 0.2s;
+    }
+    input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .toggle-eye {
+      position: absolute;
+      right: 14px;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 16px;
+      padding: 4px;
+    }
+    .toggle-eye:hover { color: #fff; }
+    .btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      padding: 14px 20px;
+      font-weight: 700;
+      font-size: 15px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      transition: all 0.2s;
+      box-shadow: 0 4px 16px var(--accent-glow);
+    }
+    .btn:hover {
+      background: var(--accent-hover);
+      transform: translateY(-1px);
+    }
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .error-box {
+      background: var(--danger-bg);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #fca5a5;
+      padding: 12px 14px;
+      border-radius: 10px;
+      font-size: 13px;
+      display: none;
+    }
+    .spinner {
+      border: 3px solid rgba(255,255,255,0.15);
+      border-top: 3px solid #fff;
+      border-radius: 50%;
+      width: 18px;
+      height: 18px;
+      animation: spin 0.8s linear infinite;
+      display: none;
+    }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .loading .spinner { display: inline-block; }
+    .loading .btn-text { opacity: 0.7; }
+    .hint {
+      font-size: 12px;
+      color: var(--text-muted);
+      text-align: center;
+      line-height: 1.5;
+      border-top: 1px solid var(--card-border);
+      padding-top: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div class="auth-card">
+    <div style="display: flex; align-items: center; justify-content: space-between;">
+      <div class="logo">
+        <span>🎠 Carousel</span>
+      </div>
+      <span class="badge">🔒 Приватный доступ</span>
+    </div>
+
+    <div>
+      <div class="title">Вход по токену</div>
+      <div class="subtitle" style="margin-top: 6px;">
+        Для доступа к Carousel Studio и автопостингу укажите ваш секретный токен доступа.
+      </div>
+    </div>
+
+    <div id="errorBox" class="error-box"></div>
+
+    <form id="authForm" style="display: flex; flex-direction: column; gap: 18px;">
+      <div class="field">
+        <label>Токен доступа (Access Token)</label>
+        <div class="input-wrap">
+          <input type="password" id="tokenInput" placeholder="karusel_..." autocomplete="current-password" autofocus required>
+          <button type="button" id="toggleEye" class="toggle-eye" title="Показать токен">👁️</button>
+        </div>
+      </div>
+
+      <button type="submit" id="submitBtn" class="btn">
+        <div class="spinner"></div>
+        <span class="btn-text">Войти в студию →</span>
+      </button>
+    </form>
+
+    <div class="hint">
+      💡 Вы также можете входить напрямую по ссылке с параметром: <br>
+      <code style="color: #cbd5e1; font-family: 'JetBrains Mono', monospace; font-size: 11px;">https://karusel.launchi.ru/?token=ТОКЕН</code>
+    </div>
+  </div>
+
+  <script>
+    const authForm = document.getElementById('authForm');
+    const tokenInput = document.getElementById('tokenInput');
+    const submitBtn = document.getElementById('submitBtn');
+    const errorBox = document.getElementById('errorBox');
+    const toggleEye = document.getElementById('toggleEye');
+
+    toggleEye.addEventListener('click', () => {
+      if (tokenInput.type === 'password') {
+        tokenInput.type = 'text';
+        toggleEye.textContent = '🙈';
+      } else {
+        tokenInput.type = 'password';
+        toggleEye.textContent = '👁️';
+      }
+    });
+
+    authForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const token = tokenInput.value.trim();
+      if (!token) return;
+
+      submitBtn.classList.add('loading');
+      submitBtn.disabled = true;
+      errorBox.style.display = 'none';
+
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token })
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Неверный токен');
+
+        // Перенаправляем на главную
+        window.location.href = '/';
+      } catch (err) {
+        errorBox.textContent = '❌ ' + err.message;
+        errorBox.style.display = 'block';
+      } finally {
+        submitBtn.classList.remove('loading');
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
+"""
+
+
+# =====================================================================
+# MAIN STUDIO HTML
 # =====================================================================
 
 HTML_CONTENT = """<!DOCTYPE html>
@@ -611,8 +997,13 @@ HTML_CONTENT = """<!DOCTYPE html>
       <button id="openTriggersBtn" class="btn btn-secondary" style="padding: 8px 14px; font-size: 13px;">
         ⚡️ Ключевые слова бота
       </button>
-      <div style="font-size: 13px; color: var(--text-muted); border-left: 1px solid var(--card-border); padding-left: 14px;">
-        karusel.launchi.ru
+      <div style="display: flex; align-items: center; gap: 10px; border-left: 1px solid var(--card-border); padding-left: 14px;">
+        <span style="font-size: 12px; color: var(--success); display: flex; align-items: center; gap: 4px;">
+          ● Доступ активен
+        </span>
+        <a href="/api/auth/logout" style="color: var(--text-muted); font-size: 12px; text-decoration: none; padding: 4px 8px; border-radius: 6px; background: rgba(255,255,255,0.06); transition: all 0.2s;" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='var(--text-muted)'">
+          Выйти 🚪
+        </a>
       </div>
     </div>
   </header>

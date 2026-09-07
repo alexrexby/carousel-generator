@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8007:8007"
+    environment:
+      - AUTH_TOKEN=${AUTH_TOKEN:-karusel_a3a266badc2f91c609cfaac6}
     volumes:
       - ./output:/app/output
       - ./config:/app/config
