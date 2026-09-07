@@ -1,0 +1,16 @@
+services:
+  carousel-generator:
+    build: .
+    container_name: carousel-generator
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8007:8007"
+    volumes:
+      - ./output:/app/output
+      - ./config:/app/config
+      - ./decks:/app/decks
+      - ./assets:/app/assets
+    deploy:
+      resources:
+        limits:
+          memory: 256M

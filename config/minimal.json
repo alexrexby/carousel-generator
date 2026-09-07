@@ -1,0 +1,61 @@
+{
+  "name": "minimal",
+  "handle": "@minimalist",
+  "colors": {
+    "primary": [
+      0,
+      0,
+      0
+    ],
+    "primary_dark": [
+      30,
+      30,
+      30
+    ],
+    "primary_deep": [
+      50,
+      50,
+      50
+    ],
+    "primary_night": [
+      20,
+      20,
+      20
+    ],
+    "primary_soft": [
+      240,
+      240,
+      240
+    ],
+    "primary_tint": [
+      248,
+      248,
+      248
+    ],
+    "ink": [
+      10,
+      10,
+      10
+    ],
+    "gray": [
+      90,
+      90,
+      90
+    ],
+    "gray_light": [
+      180,
+      180,
+      180
+    ],
+    "line": [
+      220,
+      220,
+      220
+    ],
+    "white": [
+      255,
+      255,
+      255
+    ]
+  }
+}

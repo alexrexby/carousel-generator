@@ -1,0 +1,61 @@
+{
+  "name": "ocean",
+  "handle": "@tech_creator",
+  "colors": {
+    "primary": [
+      14,
+      165,
+      233
+    ],
+    "primary_dark": [
+      2,
+      132,
+      199
+    ],
+    "primary_deep": [
+      3,
+      105,
+      161
+    ],
+    "primary_night": [
+      12,
+      74,
+      110
+    ],
+    "primary_soft": [
+      224,
+      242,
+      254
+    ],
+    "primary_tint": [
+      240,
+      249,
+      255
+    ],
+    "ink": [
+      15,
+      23,
+      42
+    ],
+    "gray": [
+      100,
+      116,
+      139
+    ],
+    "gray_light": [
+      148,
+      163,
+      184
+    ],
+    "line": [
+      224,
+      231,
+      255
+    ],
+    "white": [
+      255,
+      255,
+      255
+    ]
+  }
+}
