@@ -182,6 +182,7 @@ class AutopilotProcessRequest(BaseModel):
     url_or_text: str
     funnel_id: str
     custom_token: Optional[str] = None
+    custom_handle: Optional[str] = None
 
 
 class ExtractPreviewRequest(BaseModel):
@@ -233,7 +234,7 @@ def api_render(req: RenderRequest):
     if not req.slides:
         raise HTTPException(status_code=400, detail="Slides array cannot be empty")
         
-    theme = Theme.load(req.theme)
+    theme = Theme.load(req.theme, custom_handle=req.handle)
     render_id = str(uuid.uuid4())[:8]
     out_dir = os.path.join(TMP_DIR, render_id)
     assets_dir = os.path.join(BASE_DIR, "assets")
@@ -435,7 +436,8 @@ def api_process_autopilot(req: AutopilotProcessRequest):
             url_or_text=req.url_or_text,
             funnel_id=req.funnel_id,
             base_dir=BASE_DIR,
-            custom_token=req.custom_token
+            custom_token=req.custom_token,
+            custom_handle=req.custom_handle
         )
         return res
     except (ExtractionError, AIPipelineError, VKAPIError, ValueError) as e:
@@ -1260,6 +1262,12 @@ HTML_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div class="field">
+          <label>🏷️ Название аккаунта / подпись (внизу каждого слайда)</label>
+          <input type="text" id="accountHandleInput" placeholder="@username" style="width: 100%; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--card-border); background: rgba(255,255,255,0.04); color: #fff; font-size: 14px;">
+          <small style="color: var(--text-muted); font-size: 11px; margin-top: 4px; display: block;">Сохраняется автоматически для всех каруселей</small>
+        </div>
+
+        <div class="field">
           <label>Готовый шаблон</label>
           <select id="templateSelect">
             <option value="">-- Выберите шаблон для вставки --</option>
@@ -1330,6 +1338,11 @@ HTML_CONTENT = """<!DOCTYPE html>
           <select id="autopilotFunnelSelect" style="padding: 12px 14px;">
             <option value="">Загрузка воронок...</option>
           </select>
+        </div>
+
+        <div class="field">
+          <label>🏷️ Название аккаунта на карточках (по умолчанию из воронки)</label>
+          <input type="text" id="autopilotHandleInput" placeholder="@amalia_pro_beauty_" style="padding: 12px 14px; font-size: 14px;">
         </div>
 
         <button id="runAutopilotBtn" class="btn" style="padding: 16px 24px; font-size: 16px;">
@@ -1440,6 +1453,12 @@ HTML_CONTENT = """<!DOCTYPE html>
             <option value="dark">Dark Mode (Emerald & Graphite)</option>
             <option value="minimal">Minimal (Black & White)</option>
           </select>
+        </div>
+
+        <div class="field">
+          <label>🏷️ Название аккаунта / хэндл (подпись на карточках)</label>
+          <input type="text" id="fnHandleInput" placeholder="@amalia_pro_beauty_">
+          <small style="color: var(--text-muted); font-size: 11px;">Отображается в левом нижнем углу каждого слайда карусели</small>
         </div>
 
         <div style="border-top: 1px solid var(--card-border); padding-top: 14px; display: flex; flex-direction: column; gap: 14px;">
@@ -1621,6 +1640,20 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     // Studio Elements
     const themeSelect = document.getElementById('themeSelect');
+    const accountHandleInput = document.getElementById('accountHandleInput');
+    const autopilotHandleInput = document.getElementById('autopilotHandleInput');
+    const fnHandleInput = document.getElementById('fnHandleInput');
+
+    const savedGlobalHandle = localStorage.getItem('saved_account_handle') || '@amalia_pro_beauty_';
+    if (accountHandleInput) {
+      accountHandleInput.value = savedGlobalHandle;
+      accountHandleInput.addEventListener('input', () => {
+        localStorage.setItem('saved_account_handle', accountHandleInput.value.trim());
+        if (autopilotHandleInput && !autopilotHandleInput.value) {
+          autopilotHandleInput.value = accountHandleInput.value.trim();
+        }
+      });
+    }
     const templateSelect = document.getElementById('templateSelect');
     const jsonInput = document.getElementById('jsonInput');
     const renderBtn = document.getElementById('renderBtn');
@@ -1741,7 +1774,8 @@ HTML_CONTENT = """<!DOCTYPE html>
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             slides: slides,
-            theme: themeSelect.value
+            theme: themeSelect.value,
+            handle: accountHandleInput ? accountHandleInput.value.trim() : undefined
           })
         });
 
@@ -1777,14 +1811,29 @@ HTML_CONTENT = """<!DOCTYPE html>
     // =============================================================
     // AUTOPILOT LOGIC
     // =============================================================
+    function updateAutopilotHandle() {
+      if (!autopilotHandleInput) return;
+      const fn = funnelsCache.find(f => f.id === autopilotFunnelSelect.value);
+      if (fn && fn.handle) {
+        autopilotHandleInput.value = fn.handle;
+      } else {
+        autopilotHandleInput.value = localStorage.getItem('saved_account_handle') || '@amalia_pro_beauty_';
+      }
+    }
+
     function loadAutopilotDropdowns() {
       if (!funnelsCache || funnelsCache.length === 0) {
         autopilotFunnelSelect.innerHTML = '<option value="">Нет созданных воронок (создайте во вкладке Воронки)</option>';
         return;
       }
       autopilotFunnelSelect.innerHTML = funnelsCache.map(fn => `
-        <option value="${fn.id}">${fn.name} · Тема: ${fn.theme} · Кодовое слово: «${fn.lead_magnet.keyword}»</option>
+        <option value="${fn.id}">${fn.name} · Аккаунт: ${fn.handle || '@username'} · Кодовое слово: «${fn.lead_magnet.keyword}»</option>
       `).join('');
+      updateAutopilotHandle();
+    }
+
+    if (autopilotFunnelSelect) {
+      autopilotFunnelSelect.addEventListener('change', updateAutopilotHandle);
     }
 
     runAutopilotBtn.addEventListener('click', async () => {
@@ -1807,12 +1856,18 @@ HTML_CONTENT = """<!DOCTYPE html>
       autopilotResultCard.style.display = 'none';
 
       try {
+        const customHandle = autopilotHandleInput ? autopilotHandleInput.value.trim() : '';
+        if (customHandle) {
+          localStorage.setItem('saved_account_handle', customHandle);
+        }
+
         const res = await fetch('/api/autopilot/process', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             url_or_text: url,
             funnel_id: funnelId,
+            custom_handle: customHandle || undefined,
             custom_token: localStorage.getItem('vk_user_token') || undefined
           })
         });
@@ -1955,6 +2010,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             </div>
 
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+              <span class="badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; font-weight: 700;">🏷️ ${fn.handle || '@username'}</span>
               <span class="badge badge-blue">Тема: ${fn.theme}</span>
               <span class="badge badge-green">Кодовое слово: «${fn.lead_magnet.keyword}»</span>
               <span class="badge" style="background: rgba(255,255,255,0.08);">Слоты: ${(fn.schedule.slots || []).join(', ')}</span>
@@ -1981,6 +2037,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('editFunnelId').value = '';
       document.getElementById('fnNameInput').value = '';
       document.getElementById('fnThemeSelect').value = 'ocean';
+      document.getElementById('fnHandleInput').value = localStorage.getItem('saved_account_handle') || '@amalia_pro_beauty_';
       document.getElementById('fnVkTokenInput').value = localStorage.getItem('vk_user_token') || '';
       document.getElementById('fnVkTargetSelect').value = 'user';
       document.getElementById('fnGroupIdInput').value = '';
@@ -2000,6 +2057,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('editFunnelId').value = fn.id;
       document.getElementById('fnNameInput').value = fn.name || '';
       document.getElementById('fnThemeSelect').value = fn.theme || 'ocean';
+      document.getElementById('fnHandleInput').value = fn.handle || localStorage.getItem('saved_account_handle') || '@amalia_pro_beauty_';
       document.getElementById('fnVkTokenInput').value = fn.vk?.access_token || localStorage.getItem('vk_user_token') || '';
       document.getElementById('fnVkTargetSelect').value = fn.vk?.target || 'user';
       document.getElementById('fnGroupIdInput').value = fn.vk?.group_id || '';
@@ -2033,10 +2091,17 @@ HTML_CONTENT = """<!DOCTYPE html>
       const slotsStr = document.getElementById('fnSlotsInput').value.trim();
       const slots = slotsStr.split(',').map(s => s.trim()).filter(Boolean);
 
+      const handle = document.getElementById('fnHandleInput').value.trim();
+      if (handle) {
+        localStorage.setItem('saved_account_handle', handle);
+        if (accountHandleInput) accountHandleInput.value = handle;
+      }
+
       const payload = {
         id: id || undefined,
         name: name,
         theme: theme,
+        handle: handle || '@amalia_pro_beauty_',
         vk: {
           access_token: vkToken,
           target: target,

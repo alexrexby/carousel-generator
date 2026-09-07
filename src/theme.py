@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
 import json
+from typing import Optional
 from PIL import ImageFont
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -68,25 +69,34 @@ class Theme:
         return fnt
 
     @classmethod
-    def load(cls, name_or_path="amalia"):
+    def load(cls, name_or_path="default", custom_handle: Optional[str] = None):
+        theme_obj = None
         if not name_or_path:
-            name_or_path = "amalia"
+            name_or_path = "default"
             
         # If direct file path exists
         if os.path.isfile(name_or_path):
             with open(name_or_path, "r", encoding="utf-8") as f:
-                return cls(json.load(f))
+                theme_obj = cls(json.load(f))
                 
         # If in config dir
-        cfg_path = os.path.join(BASE_DIR, "config", f"{name_or_path}.json")
-        if os.path.isfile(cfg_path):
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                return cls(json.load(f))
+        if not theme_obj:
+            cfg_path = os.path.join(BASE_DIR, "config", f"{name_or_path}.json")
+            if os.path.isfile(cfg_path):
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    theme_obj = cls(json.load(f))
                 
         # Fallback to default
-        default_path = os.path.join(BASE_DIR, "config", "default.json")
-        if os.path.isfile(default_path):
-            with open(default_path, "r", encoding="utf-8") as f:
-                return cls(json.load(f))
+        if not theme_obj:
+            default_path = os.path.join(BASE_DIR, "config", "default.json")
+            if os.path.isfile(default_path):
+                with open(default_path, "r", encoding="utf-8") as f:
+                    theme_obj = cls(json.load(f))
                 
-        return cls()
+        if not theme_obj:
+            theme_obj = cls()
+
+        if custom_handle and str(custom_handle).strip():
+            theme_obj.handle = str(custom_handle).strip()
+
+        return theme_obj

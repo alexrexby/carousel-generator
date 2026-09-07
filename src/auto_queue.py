@@ -159,7 +159,8 @@ class QueueManager:
         url_or_text: str,
         funnel_id: str,
         base_dir: str,
-        custom_token: Optional[str] = None
+        custom_token: Optional[str] = None,
+        custom_handle: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Полный сквозной цикл автопилота:
@@ -193,7 +194,8 @@ class QueueManager:
 
         # 3. Рендеринг карусели
         theme_id = funnel.get("theme", "default")
-        theme = Theme.load(theme_id)
+        funnel_handle = custom_handle or funnel.get("handle") or funnel.get("account_name")
+        theme = Theme.load(theme_id, custom_handle=funnel_handle)
         render_id = uuid.uuid4().hex[:8]
         out_dir = os.path.join(base_dir, "output", "web_renders", render_id)
         assets_dir = os.path.join(base_dir, "assets")
@@ -247,6 +249,7 @@ class QueueManager:
             "slides_count": total,
             "slides": [f"/preview/{render_id}/{i:02d}.png" for i in range(1, total + 1)],
             "preview_url": f"/preview/{render_id}/preview.png",
+            "handle": theme.handle,
             "post_text": post_text,
             "status": status,
             "scheduled_time": slot_ts,
