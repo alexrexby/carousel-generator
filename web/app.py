@@ -147,6 +147,7 @@ def api_logout():
 class RenderRequest(BaseModel):
     slides: List[Dict[str, Any]]
     theme: Optional[str] = "default"
+    handle: Optional[str] = None
 
 
 class VKCheckTokenRequest(BaseModel):
