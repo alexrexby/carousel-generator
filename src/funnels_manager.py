@@ -35,7 +35,7 @@ DEFAULT_FUNNELS = [
 
 
 class FunnelsManager:
-    def __init__(self, filepath: str = "data/funnels.json", triggers_filepath: str = "data/triggers.yaml"):
+    def __init__(self, filepath: str = "data/funnels.json", triggers_filepath: Optional[str] = None):
         self.filepath = filepath
         self.triggers_mgr = TriggersManager(filepath=triggers_filepath)
         self._ensure_file_exists()

@@ -46,8 +46,16 @@ fallback_response:
 """
 
 
+def get_default_triggers_path() -> str:
+    bot_path = "/opt/vk-bot-engine/config/triggers.yaml"
+    if os.path.exists(bot_path):
+        return bot_path
+    return "data/triggers.yaml"
+
+
 class TriggersManager:
-    def __init__(self, filepath: str = "data/triggers.yaml"):
+    def __init__(self, filepath: Optional[str] = None):
+        self.filepath = filepath or get_default_triggers_path()
         self.filepath = filepath
         self._ensure_file_exists()
 
