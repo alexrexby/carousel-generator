@@ -21,7 +21,8 @@ from src.auto_queue import QueueManager
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP_DIR = os.path.join(BASE_DIR, "output", "web_renders")
-TRIGGERS_PATH = os.path.join(BASE_DIR, "data", "triggers.yaml")
+BOT_TRIGGERS_PATH = "/opt/vk-bot-engine/config/triggers.yaml"
+TRIGGERS_PATH = BOT_TRIGGERS_PATH if os.path.exists(BOT_TRIGGERS_PATH) else os.path.join(BASE_DIR, "data", "triggers.yaml")
 FUNNELS_PATH = os.path.join(BASE_DIR, "data", "funnels.json")
 QUEUE_PATH = os.path.join(BASE_DIR, "data", "queue.json")
 
