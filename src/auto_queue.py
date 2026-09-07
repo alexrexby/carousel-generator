@@ -175,8 +175,7 @@ class QueueManager:
             raise ValueError(f"Воронка с ID '{funnel_id}' не найдена")
 
         token = custom_token or funnel.get("vk", {}).get("access_token")
-        if not token:
-            raise ValueError("Не указан VK Access Token (сохраните его в воронке или передайте при запуске)")
+        poster = VKCarouselPoster(token) if token else None
 
         # 1. Извлечение
         extracted = extract_content(url_or_text)
@@ -212,7 +211,6 @@ class QueueManager:
         vk_group_id = funnel.get("vk", {}).get("group_id")
         slots = funnel.get("schedule", {}).get("slots", ["10:00", "14:30", "19:00"])
 
-        poster = VKCarouselPoster(token)
         slot_ts, slot_date_str = self.find_next_free_slot(
             vk_poster=poster,
             target=vk_target,
@@ -220,14 +218,22 @@ class QueueManager:
             slots=slots
         )
 
-        # 5. Отложенная публикация в ВК
-        post_res = poster.post_carousel(
-            image_paths=image_files,
-            message=post_text,
-            target=vk_target,
-            group_id=vk_group_id,
-            publish_date=slot_ts
-        )
+        # 5. Отложенная публикация в ВК (если токен задан)
+        post_res = {}
+        status = "scheduled_local"
+        if poster:
+            try:
+                post_res = poster.post_carousel(
+                    image_paths=image_files,
+                    message=post_text,
+                    target=vk_target,
+                    group_id=vk_group_id,
+                    publish_date=slot_ts
+                )
+                status = "scheduled"
+            except Exception as e:
+                logger.error(f"Failed to post to VK: {e}")
+                status = "error_vk"
 
         # 6. Добавление в очередь
         queue_item = {
@@ -242,13 +248,13 @@ class QueueManager:
             "slides": [f"/preview/{render_id}/{i:02d}.png" for i in range(1, total + 1)],
             "preview_url": f"/preview/{render_id}/preview.png",
             "post_text": post_text,
-            "status": "scheduled",
+            "status": status,
             "scheduled_time": slot_ts,
             "scheduled_date_str": slot_date_str,
             "vk_post_id": post_res.get("post_id"),
             "owner_id": post_res.get("owner_id"),
             "wall_url": post_res.get("wall_url"),
-            "vk_token": token,
+            "vk_token": token or "",
             "created_at": datetime.datetime.now(MSK_TZ).isoformat()
         }
 
