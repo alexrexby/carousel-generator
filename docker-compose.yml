@@ -10,6 +10,7 @@ services:
       - ./config:/app/config
       - ./decks:/app/decks
       - ./assets:/app/assets
+      - ./data:/app/data
     deploy:
       resources:
         limits:

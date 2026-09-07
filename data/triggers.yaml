@@ -1,0 +1,38 @@
+# Конфигурация сценариев, триггеров и кнопок VK Bot Engine
+message_triggers:
+  - id: "welcome_start"
+    name: "Приветствие"
+    match_type: "exact"
+    keywords:
+      - "начать"
+      - "старт"
+      - "start"
+      - "меню"
+    response:
+      text: |
+        👋 Здравствуйте, {first_name}!
+        Добро пожаловать в наше сообщество.
+        Напишите интересующий вас вопрос или кодовое слово из карусели!
+
+comment_triggers:
+  - id: "wall_bonus_comment"
+    name: "Кодовое слово под постом"
+    match_type: "fuzzy"
+    keywords:
+      - "бонус"
+      - "подарок"
+      - "гайд"
+    reply_comment:
+      text: |
+        @{user_screen_name} ({first_name}), мы подготовили ваш бонус! 🎁
+        Заберите его в личных сообщениях прямо сейчас 👉 vk.me/{group_domain}?ref=bonus
+    send_direct_message: true
+    direct_message:
+      text: |
+        Привет, {first_name}! 🎁
+        Вы оставили комментарий под постом. Вот ваш обещанный материал: https://example.com/bonus.pdf
+
+fallback_response:
+  text: |
+    {first_name}, я бот-ассистент сообщества 🤖
+    Я пока не знаю такое слово. Напишите «Старт» или кодовое слово из нашего последнего поста.
