@@ -13,7 +13,7 @@ DEFAULT_FUNNELS = [
     {
         "id": "beauty_service",
         "name": "Бьюти-бизнес: Сервис и стандарты",
-        "handle": "@amalia_pro_beauty_",
+        "handle": "@creator",
         "theme": "ocean",
         "vk": {
             "target": "user",

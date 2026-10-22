@@ -1343,7 +1343,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         <div class="field">
           <label>🏷️ Название аккаунта на карточках (по умолчанию из воронки)</label>
-          <input type="text" id="autopilotHandleInput" placeholder="@amalia_pro_beauty_" style="padding: 12px 14px; font-size: 14px;">
+          <input type="text" id="autopilotHandleInput" placeholder="@creator" style="padding: 12px 14px; font-size: 14px;">
         </div>
 
         <button id="runAutopilotBtn" class="btn" style="padding: 16px 24px; font-size: 16px;">
@@ -1458,7 +1458,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         <div class="field">
           <label>🏷️ Название аккаунта / хэндл (подпись на карточках)</label>
-          <input type="text" id="fnHandleInput" placeholder="@amalia_pro_beauty_">
+          <input type="text" id="fnHandleInput" placeholder="@creator">
           <small style="color: var(--text-muted); font-size: 11px;">Отображается в левом нижнем углу каждого слайда карусели</small>
         </div>
 
@@ -1645,7 +1645,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     const autopilotHandleInput = document.getElementById('autopilotHandleInput');
     const fnHandleInput = document.getElementById('fnHandleInput');
 
-    const savedGlobalHandle = localStorage.getItem('saved_account_handle') || '@amalia_pro_beauty_';
+    const savedGlobalHandle = localStorage.getItem('saved_account_handle') || '@creator';
     if (accountHandleInput) {
       accountHandleInput.value = savedGlobalHandle;
       accountHandleInput.addEventListener('input', () => {
@@ -1818,7 +1818,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (fn && fn.handle) {
         autopilotHandleInput.value = fn.handle;
       } else {
-        autopilotHandleInput.value = localStorage.getItem('saved_account_handle') || '@amalia_pro_beauty_';
+        autopilotHandleInput.value = localStorage.getItem('saved_account_handle') || '@creator';
       }
     }
 
@@ -2038,7 +2038,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('editFunnelId').value = '';
       document.getElementById('fnNameInput').value = '';
       document.getElementById('fnThemeSelect').value = 'ocean';
-      document.getElementById('fnHandleInput').value = localStorage.getItem('saved_account_handle') || '@amalia_pro_beauty_';
+      document.getElementById('fnHandleInput').value = localStorage.getItem('saved_account_handle') || '@creator';
       document.getElementById('fnVkTokenInput').value = localStorage.getItem('vk_user_token') || '';
       document.getElementById('fnVkTargetSelect').value = 'user';
       document.getElementById('fnGroupIdInput').value = '';
@@ -2058,7 +2058,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById('editFunnelId').value = fn.id;
       document.getElementById('fnNameInput').value = fn.name || '';
       document.getElementById('fnThemeSelect').value = fn.theme || 'ocean';
-      document.getElementById('fnHandleInput').value = fn.handle || localStorage.getItem('saved_account_handle') || '@amalia_pro_beauty_';
+      document.getElementById('fnHandleInput').value = fn.handle || localStorage.getItem('saved_account_handle') || '@creator';
       document.getElementById('fnVkTokenInput').value = fn.vk?.access_token || localStorage.getItem('vk_user_token') || '';
       document.getElementById('fnVkTargetSelect').value = fn.vk?.target || 'user';
       document.getElementById('fnGroupIdInput').value = fn.vk?.group_id || '';
@@ -2102,7 +2102,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         id: id || undefined,
         name: name,
         theme: theme,
-        handle: handle || '@amalia_pro_beauty_',
+        handle: handle || '@creator',
         vk: {
           access_token: vkToken,
           target: target,
