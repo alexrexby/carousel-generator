@@ -1,24 +1,34 @@
 services:
   carousel-generator:
     build: .
+    # Явные имена: на них держатся откат на :prev и приёмка (deploy.yml, deploy/accept.sh)
+    image: carousel-generator:latest
     container_name: carousel-generator
     restart: unless-stopped
     ports:
       - "127.0.0.1:8007:8007"
+    # Секреты (AUTH_TOKEN, POLZA_API_KEY, APIFY_TOKEN, опц. POLZA_BASE_URL/POLZA_MODEL)
+    # только в .env на сервере; его пишет deploy.yml из секрета Environment CAROUSEL_ENV.
+    # Значений по умолчанию здесь нет: compose в публичном репозитории.
     env_file:
       - .env
-    environment:
-      - AUTH_TOKEN=${AUTH_TOKEN:-karusel_a3a266badc2f91c609cfaac6}
-      - POLZA_API_KEY=${POLZA_API_KEY}
-      - APIFY_TOKEN=${APIFY_TOKEN}
     volumes:
-      - ./output:/app/output
-      - ./config:/app/config
-      - ./decks:/app/decks
+      # Процесс в контейнере под root (USER в Dockerfile нет) — bind-mount каталогов,
+      # созданных root:root на VPS, рестарт-петлю не даёт.
+      - ./output:/app/output   # рендеры, восстанавливать не нужно
+      - ./data:/app/data       # СОСТОЯНИЕ: воронки (в т.ч. VK-токены), очередь, триггеры
+      - ./config:/app/config   # темы (из репозитория)
+      - ./decks:/app/decks     # примеры колод (из репозитория)
       - ./assets:/app/assets
-      - ./data:/app/data
-      - /opt/vk-bot-engine/config:/opt/vk-bot-engine/config
+      # Прежний mount /opt/vk-bot-engine/config убран: код читает оттуда только
+      # triggers.yaml и при его отсутствии берёт data/triggers.yaml (web/app.py:24-25,
+      # src/triggers_manager.py:49-53). Бот vk-bot-engine погиб вместе с beget-msk-lms.
     deploy:
       resources:
         limits:
           memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

@@ -1,0 +1,6 @@
+# Edge для carousel-generator. Деплой кладёт в /etc/caddy/sites/carousel.caddy на amalia-prod;
+# базовый Caddyfile сервера импортирует /etc/caddy/sites/*.caddy (alexrexby/htmlhost:deploy/server).
+karusel.launchi.ru {
+	encode gzip
+	reverse_proxy 127.0.0.1:8007
+}

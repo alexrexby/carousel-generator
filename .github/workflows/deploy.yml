@@ -1,0 +1,123 @@
+name: Deploy carousel-generator (karusel.launchi.ru)
+
+# push в main → rsync кода → .env из секрета → сборка → пересоздание → приёмка после окна
+# стабилизации (deploy/accept.sh + проверка, что авторизация включена) → откат на :prev →
+# блок Caddy из репозитория → проверка edge. Эталон — altegioWH/.github/workflows/deploy.yml.
+#
+# Окружение GitHub `production`:
+#   vars.DEPLOY_HOST            IP сервера (не секрет)
+#   secrets.DEPLOY_SSH_KEY      приватный ключ пользователя deploy (не root)
+#   secrets.DEPLOY_KNOWN_HOSTS  закреплённый ключ хоста
+#   secrets.CAROUSEL_ENV        содержимое .env: AUTH_TOKEN, POLZA_API_KEY, APIFY_TOKEN
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', '.gitignore', '.env.example']
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-carousel
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      HOST: ${{ vars.DEPLOY_HOST }}
+      DOMAIN: karusel.launchi.ru
+      APP: /opt/carousel-generator
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup SSH (ключ хоста закреплён секретом)
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KH: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          [ -n "$HOST" ] || { echo "::error::vars.DEPLOY_HOST пуст"; exit 1; }
+          [ -n "$KEY" ]  || { echo "::error::secrets.DEPLOY_SSH_KEY пуст"; exit 1; }
+          [ -n "$KH" ]   || { echo "::error::secrets.DEPLOY_KNOWN_HOSTS пуст"; exit 1; }
+          mkdir -p ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KH" >> ~/.ssh/known_hosts
+          printf 'Host prod\n  HostName %s\n  User deploy\n  IdentityFile ~/.ssh/id_deploy\n  StrictHostKeyChecking yes\n  ConnectTimeout 15\n' "$HOST" > ~/.ssh/config
+
+      - name: Rsync кода (состояние data/ и рендеры не трогаем)
+        run: |
+          rsync -az --delete \
+            --exclude '.git/' --exclude '.github/' \
+            --exclude 'data/' --exclude 'output/' --exclude 'assets/' \
+            --exclude '.env' --exclude 'venv/' --exclude '__pycache__/' --exclude '*.pyc' \
+            --exclude '.DS_Store' \
+            ./ prod:$APP/
+          # первичное наполнение data/ из репозитория — только отсутствующие файлы,
+          # живое состояние (воронки, очередь) деплой не перезаписывает никогда
+          rsync -az --ignore-existing ./data/ prod:$APP/data/
+
+      - name: .env из секрета CAROUSEL_ENV (через stdin, не в логах)
+        env:
+          CAROUSEL_ENV: ${{ secrets.CAROUSEL_ENV }}
+        run: |
+          [ -n "$CAROUSEL_ENV" ] || { echo "::error::secrets.CAROUSEL_ENV пуст"; exit 1; }
+          printf '%s\n' "$CAROUSEL_ENV" | grep -q '^AUTH_TOKEN=.\+' || { echo "::error::в CAROUSEL_ENV нет AUTH_TOKEN"; exit 1; }
+          printf '%s\n' "$CAROUSEL_ENV" | ssh prod "umask 077; cat > $APP/.env"
+
+      - name: Сборка, пересоздание, приёмка, откат на :prev
+        run: |
+          ssh prod "APP=$APP bash -s" <<'REMOTE'
+          set -u
+          cd "$APP"
+          mkdir -p data output assets
+          have_prev=0
+          if docker image inspect carousel-generator:latest >/dev/null 2>&1; then
+            docker tag carousel-generator:latest carousel-generator:prev && have_prev=1
+          fi
+          docker compose build || exit 1
+          docker compose up -d || exit 1
+          accept() {
+            bash deploy/accept.sh carousel-generator http://127.0.0.1:8007/ "$1" || return 1
+            # авторизация включена: защищённый путь без токена обязан дать 401
+            a=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:8007/api/__accept_probe)
+            echo "auth probe -> $a (ожидаем 401)"
+            [ "$a" = "401" ]
+          }
+          if accept 15; then echo "deploy ok"; exit 0; fi
+          echo "ПРИЁМКА НЕ ПРОШЛА — хвост логов:"
+          docker logs --tail 40 carousel-generator 2>&1 || true
+          if [ "$have_prev" = 1 ]; then
+            echo "откат на carousel-generator:prev"
+            docker tag carousel-generator:prev carousel-generator:latest
+            docker compose up -d --no-build --force-recreate
+            accept 10 && echo "откат выполнен"
+          else
+            echo "первый деплой — откатывать некуда"
+          fi
+          exit 1
+          REMOTE
+
+      - name: Edge — блок Caddy из репозитория
+        run: |
+          ssh prod "
+            set -e
+            install -m 644 $APP/deploy/caddy/carousel.caddy /etc/caddy/sites/carousel.caddy
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+            caddy reload  --config /etc/caddy/Caddyfile --adapter caddyfile
+          "
+
+      - name: Проверка edge
+        run: |
+          sleep 3
+          r=$(ssh prod "curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H 'Host: $DOMAIN' http://127.0.0.1/")
+          echo "edge http -> $r"
+          case "$r" in 30[178]\ https://$DOMAIN/*) ;; *) echo "::error::vhost $DOMAIN не отвечает редиректом ($r)"; exit 1;; esac
+          a=$(dig +short A "$DOMAIN" @1.1.1.1 | tail -1)
+          if [ "$a" = "$HOST" ]; then
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://$DOMAIN/")
+            echo "public https://$DOMAIN/ -> $code"
+            [ "$code" = "200" ] || { echo "::error::публичный https не 200 ($code)"; exit 1; }
+          else
+            echo "::warning::A $DOMAIN = '$a', не $HOST — DNS не переключён, публичный TLS не проверялся"
+          fi

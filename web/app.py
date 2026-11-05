@@ -29,8 +29,12 @@ QUEUE_PATH = os.path.join(BASE_DIR, "data", "queue.json")
 os.makedirs(TMP_DIR, exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)
 
-# Секретный токен авторизации
-AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "karusel_a3a266badc2f91c609cfaac6").strip()
+# Секретный токен авторизации. Значения по умолчанию нет намеренно: прежний дефолт
+# лежал в публичном репозитории, а пустой токен в check_auth() открывает доступ всем.
+# Без AUTH_TOKEN сервис не стартует (fail closed) — приёмка деплоя это увидит.
+AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "").strip()
+if not AUTH_TOKEN:
+    raise RuntimeError("AUTH_TOKEN не задан — запуск без авторизации запрещён")
 
 triggers_mgr = TriggersManager(filepath=TRIGGERS_PATH)
 funnels_mgr = FunnelsManager(filepath=FUNNELS_PATH, triggers_filepath=TRIGGERS_PATH)
