@@ -92,7 +92,8 @@ async def auth_middleware(request: Request, call_next):
                 value=AUTH_TOKEN,
                 max_age=2592000,
                 path="/",
-                httponly=False,
+                httponly=True,
+                secure=True,
                 samesite="lax"
             )
             return response
@@ -130,7 +131,8 @@ def api_login(req: LoginRequest, response: Response):
         value=AUTH_TOKEN,
         max_age=2592000,
         path="/",
-        httponly=False,
+        httponly=True,
+        secure=True,
         samesite="lax"
     )
     return {"success": True, "message": "Авторизация успешна"}
@@ -1627,6 +1629,23 @@ HTML_CONTENT = """<!DOCTYPE html>
   </div>
 
   <script>
+    // Любая подстановка в HTML-шаблон идёт через esc() (текст и атрибуты в кавычках) или
+    // safeUrl() (href/src). Данные приходят извне: подпись поста Instagram/Threads → заголовок
+    // в очереди, ответы VK API, тексты ошибок. Барьер: tests/test_security.py.
+    function esc(v) {
+      return String(v == null ? '' : v).replace(/[&<>"'`]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;'}[c]));
+    }
+    // аргумент JS-вызова внутри HTML-атрибута (onclick="f(...)"): JSON-литерал строки,
+    // затем esc() — браузер раскодирует &quot; обратно ДО разбора JS, кавычку не разорвать
+    function jsArg(v) {
+      return esc(JSON.stringify(String(v == null ? '' : v)));
+    }
+    // разрешены только http(s) и пути своего сайта; javascript:, data:, //чужой-хост → '#'
+    function safeUrl(v) {
+      const u = String(v == null ? '' : v).trim();
+      return /^(https?:[/][/]|[/](?![/]))/i.test(u) ? esc(u) : '#';
+    }
+
     // Tab switching
     function switchTab(tabId) {
       document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
@@ -1728,13 +1747,13 @@ HTML_CONTENT = """<!DOCTYPE html>
         ]);
         
         const themes = await themesRes.json();
-        themeSelect.innerHTML = themes.map(t => `<option value="${t.id}">${t.name} (${t.handle})</option>`).join('');
+        themeSelect.innerHTML = themes.map(t => `<option value="${esc(t.id)}">${esc(t.name)} (${esc(t.handle)})</option>`).join('');
         
         const templates = await templatesRes.json();
         templateSelect.innerHTML = '<option value="">-- Выберите шаблон --</option>' + 
           templates.map(tpl => {
             templatesCache[tpl.id] = tpl.slides;
-            return `<option value="${tpl.id}">${tpl.title}</option>`;
+            return `<option value="${esc(tpl.id)}">${esc(tpl.title)}</option>`;
           }).join('');
 
         if (templates.length > 0) {
@@ -1791,12 +1810,12 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         galleryContainer.innerHTML = data.slides.map((url, idx) => `
           <div class="slide-card">
-            <a href="${url}" target="_blank">
-              <img class="slide-thumb" src="${url}" alt="Slide ${idx+1}">
+            <a href="${safeUrl(url)}" target="_blank">
+              <img class="slide-thumb" src="${safeUrl(url)}" alt="Slide ${esc(idx+1)}">
             </a>
             <div class="slide-meta">
-              <span>Слайд ${idx+1}</span>
-              <a href="${url}" download style="color: var(--accent); text-decoration: none;">1080x1350</a>
+              <span>Слайд ${esc(idx+1)}</span>
+              <a href="${safeUrl(url)}" download style="color: var(--accent); text-decoration: none;">1080x1350</a>
             </div>
           </div>
         `).join('');
@@ -1804,7 +1823,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         downloadBtn.href = data.zip_url;
         downloadBtn.style.display = 'inline-flex';
         openVkModalBtn.style.display = 'inline-flex';
-        slideCount.textContent = `${data.total} карточек собрано`;
+        slideCount.textContent = data.total + ' карточек собрано';
       } catch (e) {
         alert('Ошибка при генерации: ' + e.message);
       } finally {
@@ -1832,7 +1851,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         return;
       }
       autopilotFunnelSelect.innerHTML = funnelsCache.map(fn => `
-        <option value="${fn.id}">${fn.name} · Аккаунт: ${fn.handle || '@username'} · Кодовое слово: «${fn.lead_magnet.keyword}»</option>
+        <option value="${esc(fn.id)}">${esc(fn.name)} · Аккаунт: ${esc(fn.handle || '@username')} · Кодовое слово: «${esc(fn.lead_magnet.keyword)}»</option>
       `).join('');
       updateAutopilotHandle();
     }
@@ -1886,13 +1905,13 @@ HTML_CONTENT = """<!DOCTYPE html>
         autopilotResultCard.innerHTML = `
           <div style="background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 8px;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span class="slot-pill">⏰ ${item.scheduled_date_str}</span>
-              <a href="${item.wall_url}" target="_blank" style="color: #60a5fa; font-weight: 700; text-decoration: underline; font-size: 13px;">Открыть запись в ВК ↗</a>
+              <span class="slot-pill">⏰ ${esc(item.scheduled_date_str)}</span>
+              <a href="${safeUrl(item.wall_url)}" target="_blank" style="color: #60a5fa; font-weight: 700; text-decoration: underline; font-size: 13px;">Открыть запись в ВК ↗</a>
             </div>
-            <div style="font-weight: 700; color: #fff; font-size: 15px; margin-top: 4px;">${item.title}</div>
-            <div style="font-size: 13px; color: var(--text-muted);">${item.slides_count} слайдов · Воронка: ${item.funnel_name}</div>
+            <div style="font-weight: 700; color: #fff; font-size: 15px; margin-top: 4px;">${esc(item.title)}</div>
+            <div style="font-size: 13px; color: var(--text-muted);">${esc(item.slides_count)} слайдов · Воронка: ${esc(item.funnel_name)}</div>
             <div class="queue-preview-strip" style="margin-top: 6px;">
-              ${item.slides.map(s => `<img class="queue-thumb" src="${s}">`).join('')}
+              ${item.slides.map(s => `<img class="queue-thumb" src="${safeUrl(s)}">`).join('')}
             </div>
           </div>
         `;
@@ -1900,7 +1919,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         autopilotUrlInput.value = '';
         loadQueueData();
       } catch (err) {
-        autopilotStepText.innerHTML = `<span style="color: var(--danger)">❌ Ошибка: ${err.message}</span>`;
+        autopilotStepText.innerHTML = `<span style="color: var(--danger)">❌ Ошибка: ${esc(err.message)}</span>`;
       } finally {
         runAutopilotBtn.classList.remove('loading');
         runAutopilotBtn.disabled = false;
@@ -1931,28 +1950,28 @@ HTML_CONTENT = """<!DOCTYPE html>
         queueGridContainer.innerHTML = items.map(item => `
           <div class="queue-card">
             <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;">
-              <span class="slot-pill">⏰ ${item.scheduled_date_str}</span>
-              <button class="btn btn-danger" style="padding: 4px 8px; font-size: 11px;" onclick="cancelQueueItem('${item.id}')" title="Отменить публикацию">✕</button>
+              <span class="slot-pill">⏰ ${esc(item.scheduled_date_str)}</span>
+              <button class="btn btn-danger" style="padding: 4px 8px; font-size: 11px;" onclick="cancelQueueItem(${jsArg(item.id)})" title="Отменить публикацию">✕</button>
             </div>
 
-            <div style="font-weight: 700; color: #fff; font-size: 15px; line-height: 1.4;">${item.title}</div>
+            <div style="font-weight: 700; color: #fff; font-size: 15px; line-height: 1.4;">${esc(item.title)}</div>
             
             <div style="display: flex; gap: 8px; align-items: center;">
-              <span class="funnel-tag">${item.funnel_name || 'Воронка'}</span>
-              <span style="font-size: 12px; color: var(--text-muted);">${item.slides_count} слайдов</span>
+              <span class="funnel-tag">${esc(item.funnel_name || 'Воронка')}</span>
+              <span style="font-size: 12px; color: var(--text-muted);">${esc(item.slides_count)} слайдов</span>
             </div>
 
             <div class="queue-preview-strip">
-              ${(item.slides || []).map(s => `<a href="${s}" target="_blank"><img class="queue-thumb" src="${s}"></a>`).join('')}
+              ${(item.slides || []).map(s => `<a href="${safeUrl(s)}" target="_blank"><img class="queue-thumb" src="${safeUrl(s)}"></a>`).join('')}
             </div>
 
             <div style="background: rgba(0,0,0,0.3); padding: 10px; border-radius: 8px; font-size: 12px; color: var(--text-muted); max-height: 60px; overflow-y: hidden; text-overflow: ellipsis; white-space: pre-wrap;">
-              ${item.post_text}
+              ${esc(item.post_text)}
             </div>
 
             <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--card-border); padding-top: 12px; margin-top: 4px;">
               <span class="badge badge-green">● Отложено в ВК</span>
-              <a href="${item.wall_url}" target="_blank" style="color: var(--vk-color); font-weight: 600; text-decoration: none; font-size: 12px;">Пост в ВК ↗</a>
+              <a href="${safeUrl(item.wall_url)}" target="_blank" style="color: var(--vk-color); font-weight: 600; text-decoration: none; font-size: 12px;">Пост в ВК ↗</a>
             </div>
           </div>
         `).join('');
@@ -1966,7 +1985,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       statTotalQueued.textContent = items.length;
 
       const daysCount = Math.ceil(items.length / 3);
-      statDaysCovered.textContent = `${daysCount} дн.`;
+      statDaysCovered.textContent = daysCount + ' дн.';
 
       if (items.length > 0) {
         statNextSlot.textContent = items[0].scheduled_date_str.split(' в ')[1] || items[0].scheduled_date_str;
@@ -1978,7 +1997,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     async function cancelQueueItem(id) {
       if (!confirm('Отменить эту публикацию и удалить из отложки ВК?')) return;
       try {
-        const res = await fetch(`/api/queue/${id}`, { method: 'DELETE' });
+        const res = await fetch('/api/queue/' + encodeURIComponent(id), { method: 'DELETE' });
         if (res.ok) {
           loadQueueData();
         } else {
@@ -2007,24 +2026,24 @@ HTML_CONTENT = """<!DOCTYPE html>
         funnelsListContainer.innerHTML = funnelsCache.map(fn => `
           <div class="funnel-card">
             <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span style="font-size: 16px; font-weight: 700; color: #fff;">${fn.name}</span>
+              <span style="font-size: 16px; font-weight: 700; color: #fff;">${esc(fn.name)}</span>
               <div style="display: flex; gap: 8px;">
-                <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="editFunnel('${fn.id}')">Редактировать</button>
-                <button class="btn btn-danger" style="padding: 4px 8px; font-size: 12px;" onclick="deleteFunnel('${fn.id}')">✕</button>
+                <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="editFunnel(${jsArg(fn.id)})">Редактировать</button>
+                <button class="btn btn-danger" style="padding: 4px 8px; font-size: 12px;" onclick="deleteFunnel(${jsArg(fn.id)})">✕</button>
               </div>
             </div>
 
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-              <span class="badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; font-weight: 700;">🏷️ ${fn.handle || '@username'}</span>
-              <span class="badge badge-blue">Тема: ${fn.theme}</span>
-              <span class="badge badge-green">Кодовое слово: «${fn.lead_magnet.keyword}»</span>
-              <span class="badge" style="background: rgba(255,255,255,0.08);">Слоты: ${(fn.schedule.slots || []).join(', ')}</span>
+              <span class="badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; font-weight: 700;">🏷️ ${esc(fn.handle || '@username')}</span>
+              <span class="badge badge-blue">Тема: ${esc(fn.theme)}</span>
+              <span class="badge badge-green">Кодовое слово: «${esc(fn.lead_magnet.keyword)}»</span>
+              <span class="badge" style="background: rgba(255,255,255,0.08);">Слоты: ${esc((fn.schedule.slots || []).join(', '))}</span>
             </div>
 
             <div style="font-size: 13px; color: var(--text-muted); display: flex; flex-direction: column; gap: 4px; background: rgba(0,0,0,0.25); padding: 10px; border-radius: 8px;">
-              <div>🎁 <b>Бонус:</b> ${fn.lead_magnet.title}</div>
-              <div>🔗 <b>Ссылка:</b> <a href="${fn.lead_magnet.url}" target="_blank" style="color: #60a5fa;">${fn.lead_magnet.url}</a></div>
-              <div>📢 <b>Цель ВК:</b> ${fn.vk.target === 'group' ? 'Группа (ID ' + fn.vk.group_id + ')' : 'Личная страница'}</div>
+              <div>🎁 <b>Бонус:</b> ${esc(fn.lead_magnet.title)}</div>
+              <div>🔗 <b>Ссылка:</b> <a href="${safeUrl(fn.lead_magnet.url)}" target="_blank" style="color: #60a5fa;">${esc(fn.lead_magnet.url)}</a></div>
+              <div>📢 <b>Цель ВК:</b> ${esc(fn.vk.target === 'group' ? 'Группа (ID ' + fn.vk.group_id + ')' : 'Личная страница')}</div>
             </div>
           </div>
         `).join('');
@@ -2116,8 +2135,8 @@ HTML_CONTENT = """<!DOCTYPE html>
           keyword: keyword,
           title: lmTitle || 'Материалы',
           url: lmUrl,
-          comment_reply: `@{user_screen_name} ({first_name}), мы отправили ${lmTitle} в личные сообщения! 🎁\n\nЕсли сообщения закрыты, напишите нам: vk.me/{group_domain}`,
-          dm_text: `Здравствуйте, {first_name}! 🎁\n\nВы запросили «${lmTitle}» по кодовому слову «${keyword}».\n\nСсылка на материалы: ${lmUrl}`
+          comment_reply: '@{user_screen_name} ({first_name}), мы отправили ' + lmTitle + ' в личные сообщения! 🎁\\n\\nЕсли сообщения закрыты, напишите нам: vk.me/{group_domain}',
+          dm_text: 'Здравствуйте, {first_name}! 🎁\\n\\nВы запросили «' + lmTitle + '» по кодовому слову «' + keyword + '».\\n\\nСсылка на материалы: ' + lmUrl
         },
         schedule: {
           slots: slots.length > 0 ? slots : ['10:00', '14:30', '19:00'],
@@ -2143,7 +2162,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     async function deleteFunnel(id) {
       if (!confirm('Удалить этот пресет воронки?')) return;
       try {
-        await fetch(`/api/funnels/${id}`, { method: 'DELETE' });
+        await fetch('/api/funnels/' + encodeURIComponent(id), { method: 'DELETE' });
         loadFunnelsData();
       } catch (e) {
         alert('Ошибка удаления: ' + e.message);
@@ -2223,16 +2242,16 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         localStorage.setItem('vk_user_token', token);
         const u = data.profile.user;
-        tokenStatus.innerHTML = `<span style="color: var(--success)">✓ Авторизован: <b>${u.first_name} ${u.last_name}</b> (ID: ${u.id})</span>`;
+        tokenStatus.innerHTML = `<span style="color: var(--success)">✓ Авторизован: <b>${esc(u.first_name)} ${esc(u.last_name)}</b> (ID: ${esc(u.id)})</span>`;
 
-        vkTargetSelect.innerHTML = `<option value="user">👤 Личная страница: ${u.first_name} ${u.last_name}</option>`;
+        vkTargetSelect.innerHTML = `<option value="user">👤 Личная страница: ${esc(u.first_name)} ${esc(u.last_name)}</option>`;
         if (data.profile.groups && data.profile.groups.length > 0) {
           data.profile.groups.forEach(g => {
-            vkTargetSelect.innerHTML += `<option value="group_${g.id}">👥 Группа: ${g.name} (ID: ${g.id})</option>`;
+            vkTargetSelect.innerHTML += `<option value="group_${esc(g.id)}">👥 Группа: ${esc(g.name)} (ID: ${esc(g.id)})</option>`;
           });
         }
       } catch (e) {
-        tokenStatus.innerHTML = `<span style="color: var(--danger)">✗ ${e.message}</span>`;
+        tokenStatus.innerHTML = `<span style="color: var(--danger)">✗ ${esc(e.message)}</span>`;
       } finally {
         checkTokenBtn.disabled = false;
       }
@@ -2285,16 +2304,16 @@ HTML_CONTENT = """<!DOCTYPE html>
         publishStatus.style.background = 'rgba(16, 185, 129, 0.15)';
         publishStatus.style.color = '#34d399';
         let html = `🎉 <b>Карусель успешно опубликована!</b><br>
-                    🔗 <a href="${data.wall_url}" target="_blank" style="color: #fff; font-weight: 700; text-decoration: underline;">Открыть пост во ВКонтакте</a>`;
+                    🔗 <a href="${safeUrl(data.wall_url)}" target="_blank" style="color: #fff; font-weight: 700; text-decoration: underline;">Открыть пост во ВКонтакте</a>`;
         if (data.trigger) {
-          html += `<br><span style="font-size: 12px; color: #a7f3d0;">✓ Кодовое слово «${data.trigger.keyword.toUpperCase()}» активировано в боте</span>`;
+          html += `<br><span style="font-size: 12px; color: #a7f3d0;">✓ Кодовое слово «${esc(data.trigger.keyword.toUpperCase())}» активировано в боте</span>`;
         }
         publishStatus.innerHTML = html;
         loadQueueData();
       } catch (e) {
         publishStatus.style.background = 'rgba(239, 68, 68, 0.15)';
         publishStatus.style.color = '#f87171';
-        publishStatus.innerHTML = `❌ Ошибка: ${e.message}`;
+        publishStatus.innerHTML = `❌ Ошибка: ${esc(e.message)}`;
       } finally {
         doPublishBtn.classList.remove('loading');
         doPublishBtn.disabled = false;
@@ -2318,18 +2337,18 @@ HTML_CONTENT = """<!DOCTYPE html>
         triggersListContainer.innerHTML = data.triggers.map(t => `
           <div class="trigger-item" style="background: rgba(10, 15, 26, 0.6); border: 1px solid var(--card-border); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 8px;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span style="font-weight: 700; font-size: 14px; color: #fff;">${t.name}</span>
-              <span class="badge ${t.type === 'comment' ? 'badge-blue' : 'badge-green'}">${t.type === 'comment' ? 'Комментарии под постом' : 'Сообщения в ЛС'}</span>
+              <span style="font-weight: 700; font-size: 14px; color: #fff;">${esc(t.name)}</span>
+              <span class="badge ${esc(t.type === 'comment' ? 'badge-blue' : 'badge-green')}">${esc(t.type === 'comment' ? 'Комментарии под постом' : 'Сообщения в ЛС')}</span>
             </div>
             <div style="font-size: 12px; color: var(--text-muted);">
-              Ключевые слова: <b style="color: #cbd5e1;">${t.keywords.join(', ')}</b> (${t.match_type})
+              Ключевые слова: <b style="color: #cbd5e1;">${esc(t.keywords.join(', '))}</b> (${esc(t.match_type)})
             </div>
-            ${t.reply_text ? `<div style="font-size: 12px; background: rgba(0,0,0,0.3); padding: 8px; border-radius: 6px; white-space: pre-wrap;">💬 <b>Ответ:</b> ${t.reply_text}</div>` : ''}
-            ${t.dm_text ? `<div style="font-size: 12px; background: rgba(0,0,0,0.3); padding: 8px; border-radius: 6px; white-space: pre-wrap;">📩 <b>В ЛС:</b> ${t.dm_text}</div>` : ''}
+            ${t.reply_text ? `<div style="font-size: 12px; background: rgba(0,0,0,0.3); padding: 8px; border-radius: 6px; white-space: pre-wrap;">💬 <b>Ответ:</b> ${esc(t.reply_text)}</div>` : ''}
+            ${t.dm_text ? `<div style="font-size: 12px; background: rgba(0,0,0,0.3); padding: 8px; border-radius: 6px; white-space: pre-wrap;">📩 <b>В ЛС:</b> ${esc(t.dm_text)}</div>` : ''}
           </div>
         `).join('');
       } catch (e) {
-        triggersListContainer.innerHTML = `<div style="color: var(--danger); font-size: 13px;">Ошибка: ${e.message}</div>`;
+        triggersListContainer.innerHTML = `<div style="color: var(--danger); font-size: 13px;">Ошибка: ${esc(e.message)}</div>`;
       }
     });
 

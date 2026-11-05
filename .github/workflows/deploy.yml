@@ -86,7 +86,8 @@ jobs:
           }
           if accept 15; then echo "deploy ok"; exit 0; fi
           echo "ПРИЁМКА НЕ ПРОШЛА — хвост логов:"
-          docker logs --tail 40 carousel-generator 2>&1 || true
+          # лог Actions публичный: токен из query-string маскируем
+          docker logs --tail 40 carousel-generator 2>&1 | sed -E 's/(token=)[^ &"]*/\1***/g' || true
           if [ "$have_prev" = 1 ]; then
             echo "откат на carousel-generator:prev"
             docker tag carousel-generator:prev carousel-generator:latest
